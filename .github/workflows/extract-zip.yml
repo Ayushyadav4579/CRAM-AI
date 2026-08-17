@@ -33,9 +33,8 @@ jobs:
           mkdir -p extracted
           unzip -o "$ZIP_FILE" -d extracted
 
-      - name: Put extracted files in repository root
+      - name: Put project in repository root
         run: |
-          # Detect whether ZIP has one top-level folder
           shopt -s dotglob nullglob
 
           items=(extracted/*)
@@ -48,12 +47,21 @@ jobs:
             cp -rf extracted/* .
           fi
 
-      - name: Remove ZIP and temporary files
+      - name: Remove temporary files and ZIP workflows
         run: |
           rm -rf extracted
+
+          # Remove ZIP file
           find . -maxdepth 1 -type f -iname "*.zip" -delete
 
-      - name: Commit extracted files
+          # IMPORTANT:
+          # Do not copy GitHub Actions workflows from the ZIP.
+          rm -rf .github/workflows
+
+          # Recreate only the current extraction workflow
+          mkdir -p .github/workflows
+
+      - name: Commit extracted project
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -63,6 +71,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Extract project ZIP into repository"
+            git commit -m "Extract CRAM AI project into repository"
             git push
           fi
