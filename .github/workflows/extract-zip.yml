@@ -17,28 +17,41 @@ jobs:
       - name: Find ZIP file
         run: |
           echo "ZIP files found:"
-          find . -maxdepth 2 -type f \( -iname "*.zip" \) -print
+          find . -type f -iname "*.zip" -print
 
-      - name: Extract CRAM AI ZIP
+      - name: Extract ZIP
         run: |
-          ZIP_FILE="CRAM-AI-VERCEL-READY.zip"
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
 
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: $ZIP_FILE was not found."
-            echo "Available ZIP files:"
-            find . -type f -iname "*.zip" -print
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found!"
             exit 1
           fi
+
+          echo "Using ZIP: $ZIP_FILE"
 
           mkdir -p extracted
           unzip -o "$ZIP_FILE" -d extracted
 
-      - name: Move files to repository root
+      - name: Put extracted files in repository root
         run: |
-          shopt -s dotglob
-          cp -rf extracted/* .
+          # Detect whether ZIP has one top-level folder
+          shopt -s dotglob nullglob
+
+          items=(extracted/*)
+
+          if [ ${#items[@]} -eq 1 ] && [ -d "${items[0]}" ]; then
+            echo "ZIP contains one top-level folder."
+            cp -rf "${items[0]}"/* .
+          else
+            echo "ZIP contains files directly."
+            cp -rf extracted/* .
+          fi
+
+      - name: Remove ZIP and temporary files
+        run: |
           rm -rf extracted
-          rm -f "CRAM-AI-VERCEL-READY.zip"
+          find . -maxdepth 1 -type f -iname "*.zip" -delete
 
       - name: Commit extracted files
         run: |
@@ -50,6 +63,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Extract CRAM AI ZIP into repository"
+            git commit -m "Extract project ZIP into repository"
             git push
           fi
