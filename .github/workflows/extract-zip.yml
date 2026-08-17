@@ -14,25 +14,42 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract ZIP
+      - name: Find ZIP file
         run: |
+          echo "ZIP files found:"
+          find . -maxdepth 2 -type f \( -iname "*.zip" \) -print
+
+      - name: Extract CRAM AI ZIP
+        run: |
+          ZIP_FILE="CRAM-AI-VERCEL-READY.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: $ZIP_FILE was not found."
+            echo "Available ZIP files:"
+            find . -type f -iname "*.zip" -print
+            exit 1
+          fi
+
           mkdir -p extracted
-          unzip -o "YOUR-FILE.zip" -d extracted
+          unzip -o "$ZIP_FILE" -d extracted
 
-      - name: Move extracted files to repository root
+      - name: Move files to repository root
         run: |
-          cp -r extracted/* .
-          cp -r extracted/.[!.]* . 2>/dev/null || true
-
-      - name: Remove ZIP and temporary folder
-        run: |
+          shopt -s dotglob
+          cp -rf extracted/* .
           rm -rf extracted
-          rm -f "YOUR-FILE.zip"
+          rm -f "CRAM-AI-VERCEL-READY.zip"
 
       - name: Commit extracted files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add .
-          git commit -m "Extract ZIP into repository" || echo "No changes to commit"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Extract CRAM AI ZIP into repository"
+            git push
+          fi
