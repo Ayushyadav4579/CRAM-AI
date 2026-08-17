@@ -1,0 +1,38 @@
+name: Extract ZIP into Repository
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP
+        run: |
+          mkdir -p extracted
+          unzip -o "YOUR-FILE.zip" -d extracted
+
+      - name: Move extracted files to repository root
+        run: |
+          cp -r extracted/* .
+          cp -r extracted/.[!.]* . 2>/dev/null || true
+
+      - name: Remove ZIP and temporary folder
+        run: |
+          rm -rf extracted
+          rm -f "YOUR-FILE.zip"
+
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Extract ZIP into repository" || echo "No changes to commit"
+          git push
