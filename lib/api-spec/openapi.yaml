@@ -1,0 +1,174 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: study
+    description: Study material extraction and AI generation
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /study/extract:
+    post:
+      operationId: extractStudyMaterial
+      tags: [study]
+      summary: Extract text from a study document
+      responses:
+        "200":
+          description: Extracted study material
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResponse"
+        "400":
+          description: Invalid upload
+  /study/topics:
+    post:
+      operationId: detectStudyTopics
+      tags: [study]
+      summary: Detect chapters and topics in study material
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TopicDetectionInput"
+      responses:
+        "200":
+          description: Detected topics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopicDetection"
+  /study/generate:
+    post:
+      operationId: generateStudyPack
+      tags: [study]
+      summary: Generate a grounded study pack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudyGenerationInput"
+      responses:
+        "200":
+          description: Generated study pack
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyPack"
+  /study/chat:
+    post:
+      operationId: askStudyDocument
+      tags: [study]
+      summary: Ask a question about study material
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudyChatInput"
+      responses:
+        "200":
+          description: Document-grounded answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyChatResponse"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    ExtractResponse:
+      type: object
+      required: [name, text, characters, truncated]
+      properties:
+        name: { type: string }
+        text: { type: string }
+        characters: { type: number }
+        truncated: { type: boolean }
+    TopicDetectionInput:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, minLength: 20, maxLength: 220000 }
+    TopicDetection:
+      type: object
+      required: [topics]
+      properties:
+        topics:
+          type: array
+          items: { type: string }
+    StudyGenerationInput:
+      type: object
+      required: [text, types, count, language, difficulty]
+      properties:
+        text: { type: string, minLength: 20, maxLength: 220000 }
+        types:
+          type: array
+          minItems: 1
+          items: { type: string }
+        count: { type: number, minimum: 1, maximum: 100 }
+        language: { type: string, enum: [English, Hindi] }
+        difficulty: { type: string, enum: [easy, medium, detailed] }
+        topic:
+          type: [string, "null"]
+    StudyChatInput:
+      type: object
+      required: [text, question]
+      properties:
+        text: { type: string, minLength: 20, maxLength: 220000 }
+        question: { type: string, minLength: 1, maxLength: 1000 }
+    StudyChatResponse:
+      type: object
+      required: [answer]
+      properties:
+        answer: { type: string }
+    StudyPack:
+      type: object
+      required: [title, summary, topics, sections]
+      properties:
+        title: { type: string }
+        summary: { type: string }
+        topics:
+          type: array
+          items: { type: string }
+        sections:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyPackSection"
+    StudyPackSection:
+      type: object
+      required: [type, title, items]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        items:
+          type: array
+          items:
+            {}
+
