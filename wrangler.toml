@@ -1,8 +1,5 @@
 # Cloudflare Pages configuration
+name = "cram-ai"
+
 # Build output directory (produced by vite build)
 pages_build_output_dir = "./artifacts/cram-ai/dist"
-
-# SPA routing fallback
-[[routes]]
-  pattern = "/*"
-  zone_name = ""
