@@ -2,6 +2,12 @@
   "name": "@workspace/api",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@google/genai": "^2.13.0",
+    "mammoth": "^1.9.1",
+    "pdf-parse": "1.1.4",
+    "zod": "3.25.76"
+  },
   "devDependencies": {
     "@types/node": "catalog:"
   }
