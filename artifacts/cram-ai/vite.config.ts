@@ -5,21 +5,16 @@ import { defineConfig } from 'vite';
 
 const port = Number(process.env.PORT || 5173);
 const basePath = process.env.BASE_PATH || "/";
-const isReplitDev = process.env.NODE_ENV !== 'production' && process.env.REPL_ID !== undefined;
+const isDevEnv = process.env.NODE_ENV !== 'production' && process.env.REPL_ID !== undefined;
 
 export default defineConfig({
   base: basePath,
   plugins: [
     react(),
     tailwindcss(),
-    // Replit's dev-only tooling (error overlay, cartographer, dev banner) all
-    // assume a live Vite dev server / HMR context (import.meta.hot, a
-    // WebSocket connection). None of that exists in a static Vercel build,
-    // so all three are strictly gated to local Replit dev — never bundled
-    // into production. An earlier version of this file left the error
-    // overlay ungated, which risked it throwing during startup outside
-    // Replit and blanking the whole page before React could mount.
-    ...(isReplitDev
+    // Optional dev-only plugins: error overlay, source-map explorer, dev banner.
+    // Gated to environments that set REPL_ID; safe to skip on all platforms.
+    ...(isDevEnv
       ? [
           await import('@replit/vite-plugin-runtime-error-modal').then((m) =>
             m.default(),
@@ -60,6 +55,12 @@ export default defineConfig({
     allowedHosts: true,
     fs: {
       strict: true,
+    },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
     },
   },
   preview: {

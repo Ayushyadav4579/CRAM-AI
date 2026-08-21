@@ -1,0 +1,25 @@
+[build]
+  # Netlify runs install automatically, but we use pnpm
+  command = "npx pnpm install --no-frozen-lockfile && npx pnpm --filter @workspace/cram-ai build"
+  publish = "artifacts/cram-ai/dist"
+
+# SPA fallback: serve index.html for all routes that don't match static files
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Security headers
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+# Cache static assets aggressively
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
