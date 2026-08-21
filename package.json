@@ -7,7 +7,8 @@
     "build": "pnpm --filter @workspace/cram-ai build",
     "build:full": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "deploy:cloudflare": "npx wrangler pages deploy ./artifacts/cram-ai/dist"
   },
   "private": true,
   "dependencies": {
