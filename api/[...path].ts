@@ -500,17 +500,18 @@ function checkRateLimit(request: Request) {
 
 const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
+const HAS_AI_KEY = Boolean(process.env.GEMINI_API_KEY);
+
 function getClient() {
   const key = process.env.GEMINI_API_KEY;
-  if (!key)
-    throw new Error(
-      "AI is not configured yet. Add GEMINI_API_KEY in Vercel → Project → Settings → Environment Variables, then redeploy."
-    );
+  if (!key) return null;
   return new GoogleGenAI({ apiKey: key });
 }
 
-function generateContent(contents: string | unknown[]) {
-  return getClient().models.generateContent({
+async function generateContent(contents: string | unknown[]) {
+  const client = getClient();
+  if (!client) return null;
+  return client.models.generateContent({
     model: MODEL_NAME,
     contents: contents as any,
   });
@@ -1237,12 +1238,19 @@ async function handle(request: Request): Promise<Response> {
     try {
       const form = await request.formData();
       const value = form.get("file");
-      if (!(value instanceof File))
+      // Duck-type check: in Node.js/serverless runtimes the File global may
+      // not match the class used by FormData, so verify essential properties.
+      const isFile = value != null
+        && typeof value === "object"
+        && typeof (value as any).name === "string"
+        && typeof (value as any).size === "number"
+        && typeof (value as any).arrayBuffer === "function";
+      if (!isFile)
         return json(
           { error: "Choose a PDF, DOCX, TXT, MD, JPG, or PNG file." },
           400
         );
-      return json(await extractFile(value));
+      return json(await extractFile(value as unknown as File));
     } catch (e) {
       const message =
         e instanceof Error ? e.message : "Document extraction failed.";
@@ -1280,6 +1288,13 @@ async function handle(request: Request): Promise<Response> {
         : [];
       return json(DetectStudyTopicsResponse.parse({ topics }));
     } catch (e) {
+      if (!HAS_AI_KEY) {
+        const sentences = parsed.data.text
+          .split(/(?<=[.!?])\s+/)
+          .filter((s: string) => s.length > 15 && s.length < 100)
+          .slice(0, 15);
+        return json(DetectStudyTopicsResponse.parse({ topics: sentences }));
+      }
       return json(
         {
           error:
@@ -1339,6 +1354,7 @@ async function handle(request: Request): Promise<Response> {
         extra
       );
       const result = await generateContent(prompt);
+      if (!result) return null;
       return parseModelJson(result.text);
     };
 
@@ -1425,6 +1441,14 @@ async function handle(request: Request): Promise<Response> {
 
       return json(normalizePack(merged, types));
     } catch (e) {
+      if (!HAS_AI_KEY) {
+        return json({
+          title: "Study Pack (Demo)",
+          summary: "Demo mode: Add GEMINI_API_KEY for full AI generation.",
+          topics: [],
+          sections: types.map(t => ({ type: t, title: t, items: [] })),
+        });
+      }
       return json(
         {
           error:
@@ -1473,6 +1497,11 @@ Respond with VALID JSON ONLY: {"answer":"your answer here"}`
         typeof raw.answer === "string" ? raw.answer : result.text;
       return json(AskStudyDocumentResponse.parse({ answer }));
     } catch (e) {
+      if (!HAS_AI_KEY) {
+        return json({
+          answer: "Demo mode: Add GEMINI_API_KEY for AI-powered answers. The question was: " + parsed.data.question.slice(0, 200),
+        });
+      }
       return json(
         {
           error:
