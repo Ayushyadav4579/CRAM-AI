@@ -31,8 +31,10 @@ const router: IRouter = Router();
 const MAX_SOURCE_CHARS = 220_000;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_RETRIES = 2;
-const API_RETRIES = 3;
-const API_RETRY_BASE_MS = 1500;
+const API_RETRIES = 2;
+const API_RETRY_BASE_MS = 2000;
+const RATE_LIMIT_MAX_RETRIES = 3;
+const DAILY_QUOTA_MAX_RETRIES = 0;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_BYTES },
@@ -69,38 +71,128 @@ function getModel() {
 
 // ── Retry-aware AI generation ───────────────────────────────────────────────
 
-function isTransientError(msg: string): boolean {
-  return [
-    "429", "quota", "rate", "RESOURCE_EXHAUSTED",
-    "503", "502", "capacity", "overloaded", "UNAVAILABLE",
-    "service unavailable", "temporarily at capacity",
-  ].some((s) => msg.includes(s));
+/**
+ * Thrown when the Gemini API returns a daily/fixed quota exhaustion error.
+ * Should NOT be retried — the quota won't recover within the session.
+ */
+export class QuotaExceededError extends Error {
+  readonly retryAfter?: number;
+  constructor(message: string, retryAfter?: number) {
+    super(message);
+    this.name = "QuotaExceededError";
+    this.retryAfter = retryAfter;
+  }
+}
+
+/** Detect HTTP 429 / rate-limit errors specifically. */
+function isRateLimitError(msg: string): boolean {
+  return /\b429\b/.test(msg) ||
+    /RESOURCE_EXHAUSTED/i.test(msg) ||
+    /quota exceeded/i.test(msg) ||
+    /rate.?limit/i.test(msg) ||
+    /requests per minute/i.test(msg) ||
+    /requests per day/i.test(msg) ||
+    /exceeded your current quota/i.test(msg);
+}
+
+/** Detect daily/unrecoverable quota errors (won't self-heal). */
+function isDailyQuotaError(msg: string): boolean {
+  return /requests per day/i.test(msg) ||
+    /daily quota/i.test(msg) ||
+    /quota has been exceeded/i.test(msg) ||
+    /exceeded your daily/i.test(msg);
+}
+
+/** Detect transient server errors (502, 503, capacity, etc.). */
+function isTransientServerError(msg: string): boolean {
+  return /\b50[23]\b/.test(msg) ||
+    /capacity/i.test(msg) ||
+    /overloaded/i.test(msg) ||
+    /UNAVAILABLE/i.test(msg) ||
+    /service unavailable/i.test(msg) ||
+    /temporarily at capacity/i.test(msg);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Extract Retry-After delay from error message (in seconds). */
+function extractRetryAfter(msg: string): number | undefined {
+  const match = msg.match(/retry[_\s-]?after[:\s]*(\d+)/i);
+  return match ? parseInt(match[1], 10) : undefined;
+}
+
+/**
+ * Add jitter to a delay value to prevent thundering herd.
+ * Returns delay ± 25% with a minimum floor.
+ */
+function jitteredDelay(baseMs: number): number {
+  const jitter = baseMs * 0.25;
+  return Math.max(500, baseMs + (Math.random() * 2 * jitter - jitter));
+}
+
 async function generateWithRetry(
   model: ReturnType<typeof getModel>,
   prompt: string,
 ): Promise<string> {
+  const modelName = process.env.GEMINI_MODEL || "gemini-3.6-flash";
   let lastError: Error | null = null;
-  for (let attempt = 0; attempt <= API_RETRIES; attempt++) {
+  let rateLimitRetries = 0;
+  let serverRetries = 0;
+
+  for (let attempt = 0; attempt <= API_RETRIES + RATE_LIMIT_MAX_RETRIES; attempt++) {
     try {
       const result = await model.generateContent(prompt);
       return result.response.text();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       lastError = err instanceof Error ? err : new Error(msg);
-      if (isTransientError(msg) && attempt < API_RETRIES) {
-        const delay = API_RETRY_BASE_MS * Math.pow(2, attempt);
+
+      // ── Daily / fixed quota exhaustion → do NOT retry ────────────────────
+      if (isDailyQuotaError(msg)) {
+        console.error(
+          `[GEMINI] Daily quota exhausted — model=${modelName}, attempt=${attempt + 1}, retryCount=0`,
+        );
+        throw new QuotaExceededError(
+          "Your Gemini API daily quota has been exhausted. Try again tomorrow, or increase your quota in Google AI Studio.",
+        );
+      }
+
+      // ── HTTP 429 / rate limit → retry with backoff + jitter ─────────────
+      if (isRateLimitError(msg) && rateLimitRetries < RATE_LIMIT_MAX_RETRIES) {
+        rateLimitRetries++;
+        const retryAfter = extractRetryAfter(msg);
+        const baseDelay = retryAfter
+          ? retryAfter * 1000
+          : API_RETRY_BASE_MS * Math.pow(2, rateLimitRetries - 1);
+        const delay = jitteredDelay(baseDelay);
+        console.warn(
+          `[GEMINI] Rate limited (429) — model=${modelName}, attempt=${attempt + 1}, retryCount=${rateLimitRetries}/${RATE_LIMIT_MAX_RETRIES}, waitMs=${Math.round(delay)}`,
+        );
         await sleep(delay);
         continue;
       }
+
+      // ── Transient server error (502, 503, capacity) → retry with backoff ──
+      if (isTransientServerError(msg) && serverRetries < API_RETRIES) {
+        serverRetries++;
+        const delay = jitteredDelay(API_RETRY_BASE_MS * Math.pow(2, serverRetries - 1));
+        console.warn(
+          `[GEMINI] Transient server error — model=${modelName}, status=${msg.match(/\b5\d{2}\b/)?.[0] ?? "unknown"}, attempt=${attempt + 1}, retryCount=${serverRetries}/${API_RETRIES}, waitMs=${Math.round(delay)}`,
+        );
+        await sleep(delay);
+        continue;
+      }
+
+      // ── Non-retryable error → throw immediately ─────────────────────────
+      console.error(
+        `[GEMINI] Non-retryable error — model=${modelName}, attempt=${attempt + 1}, error=${msg.slice(0, 200)}`,
+      );
       throw lastError;
     }
   }
+
   throw lastError ?? new Error("AI generation failed after retries");
 }
 
@@ -232,6 +324,20 @@ async function generateWithType(
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+
+      // Quota exhausted → stop immediately, do NOT retry validation loop
+      if (err instanceof QuotaExceededError) {
+        throw err;
+      }
+
+      // Rate limited → stop validation retries, return what we have
+      if (isRateLimitError(errMsg)) {
+        console.warn(
+          `[STUDY] Stopping validation retries for "${type}" due to rate limit — returning partial results`,
+        );
+        return { type, title, items: [] };
+      }
+
       // Detect token limit exceeded — truncate source and retry
       if (errMsg.includes("context") || errMsg.includes("token") || errMsg.includes("TOO_LONG") || errMsg.includes("max tokens")) {
         if (attempt < MAX_RETRIES) {
@@ -823,9 +929,19 @@ ${sourceForPrompt(parsed.data.text)}`,
     res.json(DetectStudyTopicsResponse.parse({ topics }));
   } catch (error) {
     req.log.error({ error }, "Topic detection failed");
-    res
-      .status(503)
-      .json({ error: error instanceof Error ? error.message : "Topic detection failed. Please try again." });
+
+    if (error instanceof QuotaExceededError) {
+      res.status(429).json({ error: error.message, quotaExhausted: true });
+      return;
+    }
+
+    const errMsg = error instanceof Error ? error.message : "Topic detection failed.";
+    if (isRateLimitError(errMsg)) {
+      res.status(429).json({ error: "Gemini API rate limit reached. Wait a moment and try again.", retryable: true });
+      return;
+    }
+
+    res.status(503).json({ error: errMsg });
   }
 });
 
@@ -847,12 +963,33 @@ router.post("/study/generate", async (req, res): Promise<void> => {
   }
 
   try {
-    // Generate each type with its own focused prompt and validation
-    const sections = await Promise.all(
-      types.map((type) =>
-        generateWithType(type, text, difficulty, language, topic ?? null, count, knowledge),
-      ),
-    );
+    // Generate each type with its own focused prompt and validation.
+    // Use sequential generation to avoid hammering the API with parallel requests,
+    // which triggers cascading 429s.
+    const sections: Awaited<ReturnType<typeof generateWithType>>[] = [];
+    let quotaExhausted = false;
+
+    for (const type of types) {
+      if (quotaExhausted) {
+        // Skip remaining types — quota is already exhausted
+        sections.push({ type, title: typeLabels[type] ?? type, items: [] });
+        continue;
+      }
+      try {
+        const section = await generateWithType(
+          type, text, difficulty, language, topic ?? null, count, knowledge,
+        );
+        sections.push(section);
+      } catch (err) {
+        if (err instanceof QuotaExceededError) {
+          quotaExhausted = true;
+          sections.push({ type, title: typeLabels[type] ?? type, items: [] });
+          // Let remaining types fill in as empty and break
+        } else {
+          throw err;
+        }
+      }
+    }
 
     // Build topic list
     let topics: string[] = [];
@@ -905,9 +1042,29 @@ router.post("/study/generate", async (req, res): Promise<void> => {
     );
   } catch (error) {
     req.log.error({ error }, "Study pack generation failed");
-    res
-      .status(503)
-      .json({ error: error instanceof Error ? error.message : "Generation failed. Please try again." });
+
+    // Quota exhaustion → clear 429 with user-friendly message
+    if (error instanceof QuotaExceededError) {
+      res.status(429).json({
+        error: error.message,
+        quotaExhausted: true,
+      });
+      return;
+    }
+
+    // Rate limited (non-daily) → hint to retry
+    const errMsg = error instanceof Error ? error.message : "Generation failed.";
+    if (isRateLimitError(errMsg)) {
+      res.status(429).json({
+        error: "Gemini API rate limit reached. Wait a moment and try again.",
+        retryable: true,
+      });
+      return;
+    }
+
+    res.status(503).json({
+      error: errMsg.length > 300 ? errMsg.slice(0, 300) + "..." : errMsg,
+    });
   }
 });
 
@@ -973,9 +1130,19 @@ ${parsed.data.question}`,
     res.json(AskStudyDocumentResponse.parse({ answer }));
   } catch (error) {
     req.log.error({ error }, "Document chat failed");
-    res
-      .status(503)
-      .json({ error: error instanceof Error ? error.message : "Document chat failed. Please try again." });
+
+    if (error instanceof QuotaExceededError) {
+      res.status(429).json({ error: error.message, quotaExhausted: true });
+      return;
+    }
+
+    const errMsg = error instanceof Error ? error.message : "Document chat failed.";
+    if (isRateLimitError(errMsg)) {
+      res.status(429).json({ error: "Gemini API rate limit reached. Wait a moment and try again.", retryable: true });
+      return;
+    }
+
+    res.status(503).json({ error: errMsg });
   }
 });
 

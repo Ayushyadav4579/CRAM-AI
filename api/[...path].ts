@@ -1288,6 +1288,20 @@ async function handle(request: Request): Promise<Response> {
         : [];
       return json(DetectStudyTopicsResponse.parse({ topics }));
     } catch (e) {
+      const msg = e instanceof Error ? e.message : "Topic detection failed.";
+      // Rate limit / quota → 429
+      if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded your current quota/i.test(msg)) {
+        const isDaily = /requests per day|daily quota/i.test(msg);
+        return json(
+          {
+            error: isDaily
+              ? "Your Gemini API daily quota has been exhausted. Try again tomorrow."
+              : "Gemini API rate limit reached. Wait a moment and try again.",
+            quotaExhausted: isDaily,
+          },
+          429
+        );
+      }
       if (!HAS_AI_KEY) {
         const sentences = parsed.data.text
           .split(/(?<=[.!?])\s+/)
@@ -1295,13 +1309,7 @@ async function handle(request: Request): Promise<Response> {
           .slice(0, 15);
         return json(DetectStudyTopicsResponse.parse({ topics: sentences }));
       }
-      return json(
-        {
-          error:
-            e instanceof Error ? e.message : "Topic detection failed.",
-        },
-        503
-      );
+      return json({ error: msg.length > 300 ? msg.slice(0, 300) + "..." : msg }, 503);
     }
   }
 
@@ -1449,13 +1457,23 @@ async function handle(request: Request): Promise<Response> {
           sections: types.map(t => ({ type: t, title: t, items: [] })),
         });
       }
+      const msg = e instanceof Error ? e.message : "Generation failed.";
+      // Rate limit / quota → 429 with clear message
+      if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded your current quota/i.test(msg)) {
+        const isDaily = /requests per day|daily quota/i.test(msg);
+        return json(
+          {
+            error: isDaily
+              ? "Your Gemini API daily quota has been exhausted. Try again tomorrow, or increase your quota in Google AI Studio."
+              : "Gemini API rate limit reached. Wait a moment and try again.",
+            quotaExhausted: isDaily,
+            retryable: !isDaily,
+          },
+          429
+        );
+      }
       return json(
-        {
-          error:
-            e instanceof Error
-              ? e.message
-              : "Generation failed. Please try again.",
-        },
+        { error: msg.length > 300 ? msg.slice(0, 300) + "..." : msg },
         503
       );
     }
@@ -1497,18 +1515,27 @@ Respond with VALID JSON ONLY: {"answer":"your answer here"}`
         typeof raw.answer === "string" ? raw.answer : result.text;
       return json(AskStudyDocumentResponse.parse({ answer }));
     } catch (e) {
+      const msg = e instanceof Error ? e.message : "Document chat failed.";
+      // Rate limit / quota → 429
+      if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded your current quota/i.test(msg)) {
+        const isDaily = /requests per day|daily quota/i.test(msg);
+        return json(
+          {
+            error: isDaily
+              ? "Your Gemini API daily quota has been exhausted. Try again tomorrow."
+              : "Gemini API rate limit reached. Wait a moment and try again.",
+            quotaExhausted: isDaily,
+          },
+          429
+        );
+      }
       if (!HAS_AI_KEY) {
         return json({
           answer: "Demo mode: Add GEMINI_API_KEY for AI-powered answers. The question was: " + parsed.data.question.slice(0, 200),
         });
       }
       return json(
-        {
-          error:
-            e instanceof Error
-              ? e.message
-              : "Document chat failed.",
-        },
+        { error: msg.length > 300 ? msg.slice(0, 300) + "..." : msg },
         503
       );
     }
