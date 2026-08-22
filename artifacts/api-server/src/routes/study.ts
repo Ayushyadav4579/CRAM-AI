@@ -61,7 +61,7 @@ function getModel() {
       "CRAM AI needs GEMINI_API_KEY to generate content. Add it in the project's Keys/API keys tab and try again.",
     );
   }
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
   return new GoogleGenerativeAI(key).getGenerativeModel({ model });
 }
 
