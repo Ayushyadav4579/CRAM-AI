@@ -56,7 +56,11 @@ function antiHallucinationRules(): string {
     "  Only generate content about the ACTUAL EDUCATIONAL MATERIAL.",
     "- NEVER ask generic questions like 'What does the material say about X?' or 'Which statement is supported?'",
     "  Every question must be a standalone, specific educational question.",
+    "- NEVER generate questions like 'What is correct?', 'Explain this section.', 'What is the type?'",
+    "  These are meaningless. Every question must test a SPECIFIC educational concept.",
     "- If you cannot find enough material for the requested count, return FEWER items rather than padding with low-quality content.",
+    "- COVER THE ENTIRE SOURCE: distribute questions/items across ALL major topics, not just the first few paragraphs.",
+    "  Internally map the source's topics, then distribute items proportionally across them.",
   ].join("\n");
 }
 
@@ -67,6 +71,7 @@ function sourceGroundingRules(): string {
     "- Each item MUST include a sourceReference field identifying the relevant section, paragraph, or page.",
     "- Do not repeat large chunks verbatim — synthesize while preserving accuracy.",
     "- Questions must be answerable from the source alone. A student without the source should still understand the question.",
+    "- The uploaded document is the PRIMARY AUTHORITY. Do not add external knowledge unless the source explicitly covers it.",
   ].join("\n");
 }
 
@@ -260,8 +265,10 @@ NOTES QUALITY RULES:
 5. Include formulas, equations, examples, and relationships FROM the source.
 6. Content should be detailed enough to study from directly — not just a list of headings.
 7. DO NOT reproduce the source as walls of text. Synthesize and restructure.
-8. ${difficulty === "detailed" ? "For detailed mode, include analysis, comparisons, and multi-step explanations." : ""}
-9. ${difficulty === "easy" ? "For easy mode, focus on definitions and key facts with clear, simple language." : ""}
+8. COVER THE ENTIRE SOURCE: distribute notes across ALL major topics, not just the beginning.
+9. Each note's content should be 3-8 sentences of genuinely useful educational material.
+10. ${difficulty === "detailed" ? "For detailed mode, include analysis, comparisons, and multi-step explanations." : ""}
+11. ${difficulty === "easy" ? "For easy mode, focus on definitions and key facts with clear, simple language." : ""}
 
 ${metadataGuardrails()}
 ${antiHallucinationRules()}
@@ -344,6 +351,7 @@ MCQ QUALITY RULES — CRITICAL:
 1. Every question must be STANDALONE and SPECIFIC about educational content.
    ✗ BAD: "What does the material say about photosynthesis?"
    ✗ BAD: "Which of the following is mentioned in the text?"
+   ✗ BAD: "What is correct?" or "What is the type?"
    ✓ GOOD: "What is the primary pigment responsible for absorbing light energy in Photosystem II?"
    ✓ GOOD: "At what pH does the enzyme pepsin achieve maximum activity?"
 
@@ -357,6 +365,7 @@ MCQ QUALITY RULES — CRITICAL:
    - Closely related but subtly wrong statements
    - Do NOT use obviously wrong options like "This is unrelated"
    - Do NOT use "All of the above" or "None of the above" unless the source explicitly lists only 3 correct items
+   - Distractors should be the SAME LENGTH and COMPLEXITY as the correct answer
 
 4. OPTIONS QUALITY CHECK (apply to every MCQ):
    - Exactly 4 options (no more, no less)
@@ -366,6 +375,7 @@ MCQ QUALITY RULES — CRITICAL:
    - No obvious giveaway clues (different grammar/punctuation/length patterns)
    - Options should be roughly similar in length and complexity
    - Correct option must be supported by the source
+   - Do NOT make option A always correct — distribute answers across A, B, C, D
 
 5. EXPLANATION must:
    - Explain WHY the correct answer is correct (with source reference)
@@ -373,6 +383,7 @@ MCQ QUALITY RULES — CRITICAL:
    - Be 2-4 sentences, not a full paragraph
 
 6. DISTRIBUTION: Questions must cover DIFFERENT topics/sections, not cluster in one paragraph.
+   Spread questions across the breadth of the material.
 
 ${difficultyGuide(difficulty)}
 ${metadataGuardrails()}
@@ -667,6 +678,7 @@ MIND MAP RULES:
    - Cause → effect relationships
    - Classification → categories → examples
    - Process → steps → outcomes
+   - Definition → properties → applications
 4. Include 4-8 main branches covering the breadth of the material.
 5. Children should be SPECIFIC and EDUCATIONAL, not vague labels.
    ✗ BAD branch: "Important Information"
@@ -674,8 +686,9 @@ MIND MAP RULES:
    ✓ GOOD branch: "Photosynthesis"
    ✓ GOOD children: ["Light reactions", "Calvin cycle", "Chloroplasts", "ATP production"]
 6. Use relationship labels in child text where useful:
-   "requires", "produces", "leads to", "contains", "differs from"
+   "requires", "produces", "leads to", "contains", "differs from", "causes", "inhibits", "activates"
 7. Do NOT create a flat list — use genuine hierarchical relationships.
+8. Every branch MUST have at least 2 children. If you cannot think of 2 sub-concepts, merge that branch into another.
 
 ${metadataGuardrails()}
 ${antiHallucinationRules()}
@@ -850,39 +863,39 @@ OUTPUT SCHEMA (return a JSON array of objects — return FEWER than ${count} if 
 ]
 
 MNEMONIC RULES — CRITICAL:
-1. Mnemonics must be SELECTIVE. Do NOT create a mnemonic for every fact.
+1. Mnemonics must be HIGHLY SELECTIVE. Do NOT create a mnemonic for every fact.
    Only create mnemonics for concepts that are GENUINELY DIFFICULT to memorize.
+   Most study materials need only 2-5 mnemonics, NOT one per concept.
 
-2. PRIORITIZE mnemonics for:
+2. PRIORITIZE mnemonics ONLY for:
    - Long lists or ordered sequences (e.g., planets, steps in a process)
    - Multiple similar items that are easily confused
    - Classifications or categories with arbitrary groupings
    - Difficult terminology or foreign words
-   - Exceptions to rules
-   - Stages, phases, or components
+   - Exceptions to rules that are counterintuitive
+   - Stages, phases, or components in a specific order
    - Information with no intuitive connection (arbitrary names, dates)
 
 3. DO NOT create mnemonics for:
    - Obvious facts that are easy to remember
-   - Simple definitions
-   - Intuitive concepts
+   - Simple definitions or explanations
+   - Intuitive concepts that are understood through reasoning
    - Every sentence or paragraph
    - Facts that are better understood than memorized
+   - Mathematical formulas (understanding > memorization)
+   - Single isolated facts
 
-4. Evaluate each potential mnemonic on:
-   - memorization difficulty: Is this genuinely hard to remember?
-   - likelihood of confusion: Could students confuse this with something else?
-   - mnemonic usefulness: Would a memory trick actually help here?
+4. If the material contains mostly definitions, explanations, or reasoning,
+   return an empty array: []
+   Most content types do NOT benefit from mnemonics.
 
-5. If no concept in the material needs a mnemonic, return an empty array: []
-   Do NOT invent bad mnemonics just to fill the section.
-
-6. MNEMONIC QUALITY:
+5. MNEMONIC QUALITY:
    - Use vivid imagery, bizarre associations, or mini-stories
    - Natural acronyms (only when letters map to real words)
    - Rhymes, visual associations, or emotional hooks
    - The trick must make the information EASIER to remember
    - Do NOT create forced, meaningless letter combinations
+   - Each mnemonic must ACTUALLY HELP — if it doesn't, skip it
 
 ${metadataGuardrails()}
 ${antiHallucinationRules()}

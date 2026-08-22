@@ -4,6 +4,15 @@
  * Validates each item against its type-specific Zod schema,
  * checks source grounding, performs semantic deduplication,
  * and filters metadata-contaminated or low-quality content.
+ *
+ * Enhanced with:
+ * - Generic/vague question detection
+ * - MCQ option quality checks (correct answer in options, length balance)
+ * - Notes minimum content length
+ * - Flashcard atomicity check
+ * - Mind map brevity check
+ * - Mnemonics genuineness guard
+ * - Short/long answer quality gates
  */
 
 import { z } from "zod";
@@ -108,6 +117,52 @@ function passesMetadataFilter(item: Record<string, unknown>): boolean {
   return true;
 }
 
+// ── Generic/vague question detection ────────────────────────────────────────
+
+/**
+ * Patterns for questions that are too vague, generic, or meaningless.
+ * These should be rejected even if they pass schema validation.
+ */
+const GENERIC_QUESTION_PATTERNS: RegExp[] = [
+  // Vague reference patterns
+  /^what does the material say/i,
+  /^which of the following is mentioned/i,
+  /^which statement is (?:correct|true|supported|mentioned)/i,
+  /^what is correct\?/i,
+  /^what is (?:the )?type\?/i,
+  /^what is each\?/i,
+  /^what is (?:the )?correct\?/i,
+  // Meta-questions about the text itself
+  /^explain this (?:section|chapter|paragraph|part)/i,
+  /^discuss (?:this|the above)/i,
+  /^write about (?:this|the above)/i,
+  // Single word questions (not meaningful)
+  /^what is \w+\?$/i,
+  /^what are \w+\?$/i,
+  // Answer-in-question patterns
+  /^explain:/i,
+  /^describe (?:briefly )?:/i,
+  // Too-short questions
+  /^.{0,15}\?$/i,
+];
+
+/**
+ * Check if a question is too vague or generic to be educationally useful.
+ */
+function passesGenericQuestionFilter(item: Record<string, unknown>): boolean {
+  const question = typeof item.question === "string" ? item.question : "";
+  const statement = typeof item.statement === "string" ? item.statement : "";
+  const text = question || statement;
+
+  if (text.length === 0) return true; // no question to check
+
+  for (const pattern of GENERIC_QUESTION_PATTERNS) {
+    if (pattern.test(text)) return false;
+  }
+
+  return true;
+}
+
 // ── MCQ quality checks ──────────────────────────────────────────────────────
 
 /**
@@ -118,6 +173,7 @@ function passesMcqQuality(item: Record<string, unknown>): boolean {
   const question = typeof item.question === "string" ? item.question : "";
   const correctAnswer = typeof item.correctAnswer === "string" ? item.correctAnswer : "";
   const options = Array.isArray(item.options) ? item.options : [];
+  const explanation = typeof item.explanation === "string" ? item.explanation : "";
 
   // Reject if question contains the answer (answer leaked into question)
   if (question.length > 10 && correctAnswer.length > 10 && question.includes(correctAnswer.slice(0, 20))) {
@@ -125,16 +181,7 @@ function passesMcqQuality(item: Record<string, unknown>): boolean {
   }
 
   // Reject generic/bad questions
-  const badPatterns = [
-    /^what does the material say/i,
-    /^which of the following is mentioned/i,
-    /^explain:/i,
-    /^what is correct\?/i,
-    /^what is \w+\?$/i, // single-word questions like "What is Channel?"
-  ];
-  for (const pattern of badPatterns) {
-    if (pattern.test(question)) return false;
-  }
+  if (!passesGenericQuestionFilter(item)) return false;
 
   // Reject if options contain metadata
   for (const opt of options) {
@@ -144,6 +191,229 @@ function passesMcqQuality(item: Record<string, unknown>): boolean {
   // Reject if all options are identical
   const uniqueOptions = new Set(options.map(o => typeof o === "string" ? o.toLowerCase().trim() : ""));
   if (uniqueOptions.size < 3) return false;
+
+  // Reject if no explanation provided
+  if (explanation.length < 10) return false;
+
+  // Reject if correct answer doesn't appear in any option (mismatched answer)
+  if (correctAnswer.length > 0 && options.length > 0) {
+    const normalizedCorrect = correctAnswer.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
+    const anyOptionContains = options.some(o => {
+      if (typeof o !== "string") return false;
+      const normalizedOpt = o.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
+      return normalizedOpt.includes(normalizedCorrect.slice(0, 20)) || normalizedCorrect.includes(normalizedOpt.slice(0, 20));
+    });
+    if (!anyOptionContains && normalizedCorrect.length > 5) return false;
+  }
+
+  // Reject if any option is dramatically longer than others (length giveaway)
+  if (options.length >= 3) {
+    const lengths = options.map(o => typeof o === "string" ? o.length : 0).filter(l => l > 0);
+    const maxLen = Math.max(...lengths);
+    const minLen = Math.min(...lengths);
+    if (maxLen > minLen * 4 && maxLen > 80) return false;
+  }
+
+  return true;
+}
+
+// ── Notes quality check ────────────────────────────────────────────────────
+
+/**
+ * Check if a notes item has sufficient educational content.
+ */
+function passesNotesQuality(item: Record<string, unknown>): boolean {
+  const heading = typeof item.heading === "string" ? item.heading : "";
+  const content = typeof item.content === "string" ? item.content : "";
+
+  // Reject if content is too short to be educational
+  if (content.length < 20) return false;
+
+  // Reject if heading is empty or too generic
+  if (heading.length === 0) return false;
+
+  // Reject metadata-contaminated headings
+  if (containsMetadata(heading)) return false;
+
+  // Reject if heading is just a sentence (not a topic label)
+  if (heading.length > 100 && /[.!?]$/.test(heading)) return false;
+
+  return true;
+}
+
+// ── Flashcard quality check ────────────────────────────────────────────────
+
+/**
+ * Check if a flashcard follows atomicity (one concept per card).
+ */
+function passesFlashcardQuality(item: Record<string, unknown>): boolean {
+  const front = typeof item.front === "string" ? item.front : "";
+  const back = typeof item.back === "string" ? item.back : "";
+
+  // Front should be concise (one question/term)
+  if (front.length > 150) return false;
+
+  // Back should be concise (1-3 sentences)
+  if (back.length > 300) return false;
+
+  // Front should not be empty
+  if (front.length < 5) return false;
+
+  // Back should not be empty
+  if (back.length < 3) return false;
+
+  // Reject metadata-contaminated cards
+  if (containsMetadata(front)) return false;
+
+  return true;
+}
+
+// ── Mind map quality check ─────────────────────────────────────────────────
+
+/**
+ * Check if a mind map item has short, meaningful labels.
+ */
+function passesMindmapQuality(item: Record<string, unknown>): boolean {
+  const branch = typeof item.branch === "string" ? item.branch : "";
+  const children = Array.isArray(item.children) ? item.children : [];
+
+  // Branch should be short (1-5 words)
+  if (branch.length > 50) return false;
+
+  // Children should be short
+  for (const child of children) {
+    if (typeof child === "string" && child.length > 60) return false;
+  }
+
+  // Branch should not be metadata
+  if (containsMetadata(branch)) return false;
+
+  // Branch should not be empty
+  if (branch.length < 2) return false;
+
+  // Should have at least one child
+  if (children.length === 0) return false;
+
+  return true;
+}
+
+// ── Mnemonics quality check ────────────────────────────────────────────────
+
+/**
+ * Check if a mnemonic is genuinely useful (not forced).
+ */
+function passesMnemonicQuality(item: Record<string, unknown>): boolean {
+  const fact = typeof item.fact === "string" ? item.fact : "";
+  const trick = typeof item.trick === "string" ? item.trick : "";
+
+  // Trick should be substantive
+  if (trick.length < 10) return false;
+
+  // Reject obviously forced/generic mnemonics
+  const forcedPatterns = [
+    /^no mnemonic/i,
+    /^understanding.*is more reliable/i,
+    /^better learned through/i,
+    /^easier to remember directly/i,
+  ];
+  for (const pattern of forcedPatterns) {
+    if (pattern.test(trick)) return false;
+  }
+
+  // Reject if the trick is just a rephrasing of the fact
+  if (fact.length > 5 && trick.length > 5) {
+    const factNorm = normalizeForDedup(fact);
+    const trickNorm = normalizeForDedup(trick);
+    if (factNorm === trickNorm) return false;
+  }
+
+  // Reject metadata-contaminated mnemonics
+  if (containsMetadata(fact)) return false;
+
+  return true;
+}
+
+// ── Short/long answer quality check ────────────────────────────────────────
+
+/**
+ * Check if a short answer question has a substantive question and answer.
+ */
+function passesShortAnswerQuality(item: Record<string, unknown>): boolean {
+  const question = typeof item.question === "string" ? item.question : "";
+  const answer = typeof item.answer === "string" ? item.answer : "";
+
+  // Question should be substantive
+  if (question.length < 15) return false;
+
+  // Answer should be substantive
+  if (answer.length < 10) return false;
+
+  // Reject metadata-contaminated
+  if (containsMetadata(question)) return false;
+
+  // Reject generic questions
+  if (!passesGenericQuestionFilter(item)) return false;
+
+  return true;
+}
+
+/**
+ * Check if a long answer question has a meaningful question, answer, and key points.
+ */
+function passesLongAnswerQuality(item: Record<string, unknown>): boolean {
+  const question = typeof item.question === "string" ? item.question : "";
+  const answer = typeof item.answer === "string" ? item.answer : "";
+  const keyPoints = Array.isArray(item.keyPoints) ? item.keyPoints : [];
+
+  // Question should be substantial
+  if (question.length < 20) return false;
+
+  // Answer should be substantial
+  if (answer.length < 30) return false;
+
+  // Should have key points
+  if (keyPoints.length < 2) return false;
+
+  // Reject metadata-contaminated
+  if (containsMetadata(question)) return false;
+
+  // Reject generic questions
+  if (!passesGenericQuestionFilter(item)) return false;
+
+  return true;
+}
+
+// ── Definition quality check ───────────────────────────────────────────────
+
+function passesDefinitionQuality(item: Record<string, unknown>): boolean {
+  const term = typeof item.term === "string" ? item.term : "";
+  const definition = typeof item.definition === "string" ? item.definition : "";
+
+  // Term should be a meaningful term (not a sentence fragment)
+  if (term.length < 2 || term.length > 80) return false;
+
+  // Definition should be substantive
+  if (definition.length < 10) return false;
+
+  // Reject metadata-contaminated terms
+  if (containsMetadata(term)) return false;
+
+  return true;
+}
+
+// ── Formula quality check ──────────────────────────────────────────────────
+
+function passesFormulaQuality(item: Record<string, unknown>): boolean {
+  const formula = typeof item.formula === "string" ? item.formula : "";
+
+  // Formula should not be a sentence
+  if (formula.length > 100) return false;
+
+  // Formula should contain mathematical content (at least one of: =, +, -, ×, variable)
+  if (!/[=+\-×÷a-zA-Z]/.test(formula)) return false;
+
+  // Reject metadata disguised as formulas
+  if (containsMetadata(formula)) return false;
 
   return true;
 }
@@ -222,7 +492,7 @@ export function passesSourceGrounding(
  * 1. Schema validation (drop malformed items)
  * 2. Metadata contamination filter (drop items based on metadata)
  * 3. Source grounding check (drop items that look fabricated)
- * 4. MCQ quality check (for MCQ type only)
+ * 4. Type-specific quality checks (MCQ, notes, flashcards, etc.)
  * 5. Semantic deduplication (drop near-duplicate items)
  */
 export function validateSection(
@@ -249,12 +519,76 @@ export function validateSection(
     return passesSourceGrounding(item as Record<string, unknown>, sourceText);
   });
 
-  // Step 4: MCQ quality check (for MCQ type only)
-  if (type === "mcq") {
-    validated = validated.filter((item) => {
-      if (!item || typeof item !== "object") return false;
-      return passesMcqQuality(item as Record<string, unknown>);
-    });
+  // Step 4: Type-specific quality checks
+  switch (type) {
+    case "mcq":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesMcqQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "notes":
+    case "short_notes":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesNotesQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "flashcards":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesFlashcardQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "mindmap":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesMindmapQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "mnemonics":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesMnemonicQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "short_answer":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesShortAnswerQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "long_answer":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesLongAnswerQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "definitions":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesDefinitionQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "formulas":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesFormulaQuality(item as Record<string, unknown>);
+      });
+      break;
+
+    case "true_false":
+    case "fill_blank":
+      // These use the generic quality filters already applied
+      break;
   }
 
   // Step 5: Semantic deduplication
