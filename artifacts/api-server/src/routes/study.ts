@@ -31,6 +31,8 @@ const router: IRouter = Router();
 const MAX_SOURCE_CHARS = 220_000;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_RETRIES = 2;
+const API_RETRIES = 3;
+const API_RETRY_BASE_MS = 1500;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_BYTES },
@@ -63,6 +65,43 @@ function getModel() {
   }
   const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
   return new GoogleGenerativeAI(key).getGenerativeModel({ model });
+}
+
+// ── Retry-aware AI generation ───────────────────────────────────────────────
+
+function isTransientError(msg: string): boolean {
+  return [
+    "429", "quota", "rate", "RESOURCE_EXHAUSTED",
+    "503", "502", "capacity", "overloaded", "UNAVAILABLE",
+    "service unavailable", "temporarily at capacity",
+  ].some((s) => msg.includes(s));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function generateWithRetry(
+  model: ReturnType<typeof getModel>,
+  prompt: string,
+): Promise<string> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= API_RETRIES; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      lastError = err instanceof Error ? err : new Error(msg);
+      if (isTransientError(msg) && attempt < API_RETRIES) {
+        const delay = API_RETRY_BASE_MS * Math.pow(2, attempt);
+        await sleep(delay);
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError ?? new Error("AI generation failed after retries");
 }
 
 // ── Text helpers ─────────────────────────────────────────────────────────────
@@ -165,8 +204,7 @@ async function generateWithType(
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await model.generateContent(prompt);
-      const raw = parseModelJson(result.response.text());
+      const raw = parseModelJson(await generateWithRetry(model, prompt));
 
       // Extract the items array from the response
       let items: unknown[] = [];
@@ -194,14 +232,9 @@ async function generateWithType(
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      // Detect rate limits — do not retry, fail immediately
-      if (errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("rate") || errMsg.includes("RESOURCE_EXHAUSTED")) {
-        throw new Error("The AI service is temporarily at capacity. Please wait a moment and try again.");
-      }
       // Detect token limit exceeded — truncate source and retry
       if (errMsg.includes("context") || errMsg.includes("token") || errMsg.includes("TOO_LONG") || errMsg.includes("max tokens")) {
         if (attempt < MAX_RETRIES) {
-          // Retry with truncated source (50% shorter)
           continue;
         }
       }
@@ -758,7 +791,7 @@ router.post("/study/topics", async (req, res): Promise<void> => {
       ? `\nThis is a question bank. Identify topics covered by the questions, not the questions themselves.`
       : "";
 
-    const result = await model.generateContent(
+    const topicsText = await generateWithRetry(model,
       `You are an expert academic content analyst.${subjectContext}${mathContext}${questionBankContext}
 
 TASK: Analyze the study material below and identify its hierarchical structure.
@@ -781,7 +814,7 @@ Topics should be specific enough to be useful for focused study (e.g. "Pair of L
 STUDY MATERIAL:
 ${sourceForPrompt(parsed.data.text)}`,
     );
-    const raw = parseModelJson(result.response.text());
+    const raw = parseModelJson(topicsText);
     const rawTopics =
       raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).topics)
         ? ((raw as Record<string, unknown>).topics as unknown[])
@@ -831,10 +864,10 @@ router.post("/study/generate", async (req, res): Promise<void> => {
       const questionBankContext = knowledge.questionBank.isQuestionBank
         ? `\nThis is a question bank. Focus on concepts, not question format.`
         : "";
-      const result = await model.generateContent(
+      const autoTopicsText = await generateWithRetry(model,
         `Identify 5-15 major topics from this study material.${topicContext}${questionBankContext}\nReturn JSON only: {"topics":["topic1","topic2"]}\n\nSTUDY MATERIAL:\n${sourceForPrompt(text.slice(0, 16000))}`,
       );
-      const raw = parseModelJson(result.response.text());
+      const raw = parseModelJson(autoTopicsText);
       if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).topics)) {
         topics = ((raw as Record<string, unknown>).topics as unknown[])
           .filter((t): t is string => typeof t === "string")
@@ -908,7 +941,7 @@ router.post("/study/chat", async (req, res): Promise<void> => {
 - For parameter-based equations, apply the correct mathematical conditions.`
       : "";
 
-    const result = await model.generateContent(
+    const chatText = await generateWithRetry(model,
       `You are a source-grounded study tutor.${mathInstructions}
 
 TASK: Answer the student's question using ONLY the uploaded study material below.
@@ -930,13 +963,13 @@ ${sourceForPrompt(sourceText)}
 QUESTION:
 ${parsed.data.question}`,
     );
-    const parsedResponse = parseModelJson(result.response.text());
+    const parsedResponse = parseModelJson(chatText);
     const answer =
       parsedResponse &&
       typeof parsedResponse === "object" &&
       typeof (parsedResponse as Record<string, unknown>).answer === "string"
         ? (parsedResponse as Record<string, unknown>).answer
-        : result.response.text();
+        : chatText;
     res.json(AskStudyDocumentResponse.parse({ answer }));
   } catch (error) {
     req.log.error({ error }, "Document chat failed");
