@@ -63,8 +63,16 @@ export default defineConfig({
         // Study generation makes multiple sequential Gemini API calls and can
         // easily exceed the default http-proxy timeout. Set a generous timeout
         // so the connection stays alive while the backend works.
-        timeout: 120_000,
-        proxyTimeout: 120_000,
+        timeout: 300_000,
+        proxyTimeout: 300_000,
+        configure: (proxy) => {
+          // Disable response buffering for SSE streaming
+          proxy.on('proxyRes', (proxyRes) => {
+            if (proxyRes.headers['content-type']?.includes('text/event-stream')) {
+              proxyRes.headers['x-accel-buffering'] = 'no';
+            }
+          });
+        },
       },
     },
   },

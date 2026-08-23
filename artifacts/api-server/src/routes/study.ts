@@ -35,6 +35,15 @@ const API_RETRIES = 2;
 const API_RETRY_BASE_MS = 2000;
 const RATE_LIMIT_MAX_RETRIES = 3;
 const DAILY_QUOTA_MAX_RETRIES = 0;
+/**
+ * Maximum concurrent Gemini generation requests.
+ * Start at 1 to avoid 429s on the free tier. Adaptive concurrency will
+ * auto-scale up to this limit when requests succeed without rate-limiting.
+ */
+const MAX_CONCURRENT_GENERATIONS = 2;
+/** Track recent 429 errors to adapt concurrency. */
+let recentRateLimits = 0;
+let lastRateLimitTime = 0;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_BYTES },
@@ -149,6 +158,8 @@ async function generateWithRetry(
   for (let attempt = 0; attempt <= API_RETRIES + RATE_LIMIT_MAX_RETRIES; attempt++) {
     try {
       const result = await model.generateContent(prompt);
+      // Decay rate limit counter on success
+      if (recentRateLimits > 0) recentRateLimits = Math.max(0, recentRateLimits - 1);
       return result.response.text();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -172,6 +183,8 @@ async function generateWithRetry(
           ? retryAfter * 1000
           : API_RETRY_BASE_MS * Math.pow(2, rateLimitRetries - 1);
         const delay = jitteredDelay(baseDelay);
+        recentRateLimits++;
+        lastRateLimitTime = Date.now();
         console.warn(
           `[GEMINI] Rate limited (429) — model=${modelName}, attempt=${attempt + 1}, retryCount=${rateLimitRetries}/${RATE_LIMIT_MAX_RETRIES}, waitMs=${Math.round(delay)}`,
         );
@@ -275,6 +288,44 @@ function buildSubjectSummary(knowledge: MathKnowledge): string {
     parts.push(`Question bank: ${knowledge.questionBank.mcqs.length} MCQs, ${knowledge.questionBank.questions.length} questions`);
   }
   return parts.join(" · ");
+}
+
+// ── Concurrency limiter ───────────────────────────────────────────────────
+
+/**
+ * Run async tasks with bounded concurrency.
+ * Returns results in the same order as the input tasks.
+ */
+async function parallelLimit<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number,
+  staggerMs: number = 2000,
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let nextIndex = 0;
+
+  // Adaptive concurrency: if recent rate limits, reduce workers
+  const effectiveLimit = recentRateLimits > 2 ? 1 : Math.min(limit, tasks.length);
+  if (effectiveLimit < limit) {
+    console.info(`[STUDY] Adaptive concurrency: reduced to ${effectiveLimit} due to ${recentRateLimits} recent rate limits`);
+  }
+  // Decay rate limit counter over time
+  if (Date.now() - lastRateLimitTime > 30_000) recentRateLimits = 0;
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const i = nextIndex++;
+      // Stagger starts: worker N starts N * staggerMs after worker 0
+      if (i > 0 && staggerMs > 0) {
+        await sleep(staggerMs * i);
+      }
+      results[i] = await tasks[i]();
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(effectiveLimit, tasks.length) }, () => worker());
+  await Promise.allSettled(workers);
+  return results;
 }
 
 // ── AI generation with retry ─────────────────────────────────────────────────
@@ -988,35 +1039,24 @@ router.post("/study/generate", async (req, res): Promise<void> => {
   }
 
   try {
-    // Generate each type with its own focused prompt and validation.
-    // Use sequential generation to avoid hammering the API with parallel requests,
-    // which triggers cascading 429s.
-    const sections: Awaited<ReturnType<typeof generateWithType>>[] = [];
-    let quotaExhausted = false;
-
-    for (const type of types) {
-      if (quotaExhausted) {
-        // Skip remaining types — quota is already exhausted
-        sections.push({ type, title: typeLabels[type] ?? type, items: [] });
-        continue;
-      }
+    // ── Generate all requested types in parallel with bounded concurrency ──
+    const tasks = types.map((type) => async () => {
       try {
-        const section = await generateWithType(
+        return await generateWithType(
           type, text, difficulty, language, topic ?? null, count, knowledge,
         );
-        sections.push(section);
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          quotaExhausted = true;
-          sections.push({ type, title: typeLabels[type] ?? type, items: [] });
-          // Let remaining types fill in as empty and break
-        } else {
-          throw err;
+          console.warn(`[STUDY] Quota exhausted during "${type}" — returning empty section`);
+          return { type, title: typeLabels[type] ?? type, items: [] };
         }
+        throw err;
       }
-    }
+    });
 
-    // Build topic list
+    const sections = await parallelLimit(tasks, MAX_CONCURRENT_GENERATIONS);
+
+    // ── Detect topics after generation (avoids extra concurrent Gemini call) ──
     let topics: string[] = [];
     try {
       const model = getModel();
@@ -1090,6 +1130,141 @@ router.post("/study/generate", async (req, res): Promise<void> => {
     res.status(503).json({
       error: errMsg.length > 300 ? errMsg.slice(0, 300) + "..." : errMsg,
     });
+  }
+});
+
+// ── SSE streaming endpoint ──────────────────────────────────────────────────
+
+router.post("/study/generate-stream", async (req, res): Promise<void> => {
+  const parsed = GenerateStudyPackBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Check your study material, output formats, language, difficulty, and item count." });
+    return;
+  }
+
+  const { text, types, count, language, difficulty, topic } = parsed.data;
+  const knowledge = buildMathKnowledge(text);
+
+  if (!process.env.GEMINI_API_KEY) {
+    res.json(demoPack(text, types, count, topic, knowledge));
+    return;
+  }
+
+  // Set up SSE headers
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+
+  const sendEvent = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    // Signal: source analysed
+    sendEvent("progress", {
+      phase: "source_analysed",
+      message: `Subject: ${knowledge.subject}${knowledge.chapter ? `, Chapter: ${knowledge.chapter}` : ""}`,
+    });
+
+    // Track section completion for progress events
+    const sectionResults: { type: string; title: string; items: unknown[] }[] = [];
+    let sectionsCompleted = 0;
+    const totalSections = types.length;
+
+    // Generate types with bounded concurrency, sending progress as each completes
+    const tasks = types.map((type) => async () => {
+      const title = typeLabels[type] ?? type;
+      sendEvent("progress", { phase: "generating", type, title, message: `Generating ${title}...` });
+      try {
+        const section = await generateWithType(
+          type, text, difficulty, language, topic ?? null, count, knowledge,
+        );
+        sectionsCompleted++;
+        sendEvent("section_complete", {
+          type: section.type,
+          title: section.title,
+          itemCount: section.items.length,
+          progress: `${sectionsCompleted}/${totalSections}`,
+        });
+        return section;
+      } catch (err) {
+        sectionsCompleted++;
+        if (err instanceof QuotaExceededError) {
+          sendEvent("section_complete", { type, title, itemCount: 0, progress: `${sectionsCompleted}/${totalSections}`, error: "quota_exhausted" });
+          return { type, title, items: [] };
+        }
+        sendEvent("section_complete", { type, title, itemCount: 0, progress: `${sectionsCompleted}/${totalSections}`, error: "generation_failed" });
+        return { type, title, items: [] };
+      }
+    });
+
+    const sections = await parallelLimit(tasks, MAX_CONCURRENT_GENERATIONS);
+    // ── Detect topics after generation (avoids extra concurrent Gemini call) ──
+    let topics: string[] = [];
+    try {
+      const model = getModel();
+      const topicContext = knowledge.hasMathContent
+        ? `\nThis is a ${knowledge.subject} document. Focus on ${knowledge.subject}-specific topics.`
+        : "";
+      const questionBankContext = knowledge.questionBank.isQuestionBank
+        ? `\nThis is a question bank. Focus on concepts, not question format.`
+        : "";
+      const autoTopicsText = await generateWithRetry(model,
+        `Identify 5-15 major topics from this study material.${topicContext}${questionBankContext}\nReturn JSON only: {"topics":["topic1","topic2"]}\n\nSTUDY MATERIAL:\n${sourceForPrompt(text.slice(0, 16000))}`
+      );
+      const raw = parseModelJson(autoTopicsText);
+      if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).topics)) {
+        topics = ((raw as Record<string, unknown>).topics as unknown[])
+          .filter((t): t is string => typeof t === "string")
+          .slice(0, 20);
+      }
+    } catch {
+      // If topic generation fails, continue without topics
+    }
+
+    // Build summary
+    const totalItems = sections.reduce((sum, s) => sum + s.items.length, 0);
+    const subjectInfo = buildSubjectSummary(knowledge);
+    const summaryParts: string[] = [];
+    if (subjectInfo) summaryParts.push(subjectInfo);
+    if (topic) {
+      summaryParts.push(`Focused on "${topic}" with ${totalItems} items across ${types.length} formats.`);
+    } else {
+      summaryParts.push(`Complete study pack with ${totalItems} source-grounded items across ${types.length} formats.`);
+    }
+    const summary = summaryParts.join(" — ");
+
+    const subjectLabel = knowledge.subject !== "general" && knowledge.chapter
+      ? `${knowledge.chapter} — ${knowledge.subject.charAt(0).toUpperCase() + knowledge.subject.slice(1)}`
+      : topic
+        ? `Study Pack: ${topic}`
+        : "CRAM AI Study Pack";
+
+    // Send final complete pack
+    sendEvent("complete", {
+      title: subjectLabel,
+      summary,
+      topics,
+      sections,
+    });
+
+    res.end();
+  } catch (error) {
+    req.log.error({ error }, "Streaming generation failed");
+    if (error instanceof QuotaExceededError) {
+      sendEvent("error", { error: error.message, quotaExhausted: true });
+    } else {
+      const errMsg = error instanceof Error ? error.message : "Generation failed.";
+      if (isRateLimitError(errMsg)) {
+        sendEvent("error", { error: "Gemini API rate limit reached. Wait a moment and try again.", retryable: true });
+      } else {
+        sendEvent("error", { error: errMsg.length > 300 ? errMsg.slice(0, 300) + "..." : errMsg });
+      }
+    }
+    res.end();
   }
 });
 

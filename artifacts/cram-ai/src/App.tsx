@@ -16,6 +16,7 @@ type OutputType = "notes" | "short_notes" | "mcq" | "short_answer" | "long_answe
 type Difficulty = "easy" | "medium" | "detailed";
 type Language = "English" | "Hindi";
 type SavedPack = { id: string; name: string; characters: number; createdAt: string; text: string; pack: StudyPack };
+type ProgressEvent = { phase: string; type?: string; title?: string; message: string; itemCount?: number; progress?: string; error?: string };
 type ItemRecord = Record<string, unknown>;
 
 // ── DPP Types ─────────────────────────────────────────────────────────────────
@@ -104,6 +105,69 @@ function prettyItem(item: unknown): string {
   return entries.join("\n");
 }
 function MiniLogo() { return <div className="sg-logo"><Sparkles size={17} strokeWidth={2.5} /></div>; }
+
+// ── SSE streaming generation ──────────────────────────────────────────────────
+
+type GenerateStreamInput = { text: string; types: string[]; count: number; language: string; difficulty: string; topic: string | null };
+
+async function generateStudyPackStream(
+  input: GenerateStreamInput,
+  onProgress: (event: ProgressEvent) => void,
+): Promise<StudyPack> {
+  const response = await fetch("/api/study/generate-stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Stream not supported");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: StudyPack | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    let eventType = "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        const dataStr = line.slice(6);
+        try {
+          const data = JSON.parse(dataStr);
+          if (eventType === "progress") {
+            onProgress(data as ProgressEvent);
+          } else if (eventType === "section_complete") {
+            onProgress(data as ProgressEvent);
+          } else if (eventType === "complete") {
+            result = data as StudyPack;
+          } else if (eventType === "error") {
+            throw new Error(data.error || "Generation failed");
+          }
+        } catch (e) {
+          if (e instanceof SyntaxError) continue;
+          throw e;
+        }
+      }
+    }
+  }
+
+  if (!result) throw new Error("No complete study pack received");
+  return result;
+}
 
 // ── Existing display cards ─────────────────────────────────────────────────────
 
@@ -554,6 +618,7 @@ function Home() {
   const [pack, setPack] = useState<StudyPack | null>(null); const [history, setHistory] = useState<SavedPack[]>([]);
   const [chatQuestion, setChatQuestion] = useState(""); const [chatAnswer, setChatAnswer] = useState<StudyChatResponse | null>(null);
   const [error, setError] = useState(""); const [busyLabel, setBusyLabel] = useState(""); const [dragging, setDragging] = useState(false); const [copied, setCopied] = useState(false); const [qualityMessage, setQualityMessage] = useState(""); const [subjectInfo, setSubjectInfo] = useState<{subject?: string; gradeLevel?: string; chapter?: string; isQuestionBank?: boolean; hasMathContent?: boolean} | null>(null);
+  const [progress, setProgress] = useState<ProgressEvent | null>(null);
 
   // ── DPP state ─────────────────────────────────────────────────────────────
   const [dppPhase, setDppPhase] = useState<"idle" | "config" | "generating" | "intro" | "test" | "result">("idle");
@@ -611,11 +676,18 @@ function Home() {
     if (text.trim().length < 20) return setError("Upload a PDF/notes file or paste at least 20 characters first.");
     const selected = quickType ? [quickType] : outputs;
     if (!selected.length) return setError("Select at least one output.");
-    try { setError(""); setBusyLabel(quickType === "mnemonics" ? "Creating memory tricks…" : "Building your study system…");
-      const result = await generateMutation.mutateAsync({ text, types: selected, count, language, difficulty, topic: selectedTopic || null }); setPack(result); setChatAnswer(null);
+    try {
+      setError("");
+      setProgress(null);
+      setBusyLabel(quickType === "mnemonics" ? "Creating memory tricks…" : "Building your study system…");
+      const result = await generateStudyPackStream(
+        { text, types: selected, count, language, difficulty, topic: selectedTopic || null },
+        (event) => setProgress(event),
+      );
+      setPack(result); setChatAnswer(null);
       const saved = { id: crypto.randomUUID(), name: fileName || "Untitled study material", characters: text.length, createdAt: new Date().toISOString(), text, pack: result } satisfies SavedPack;
       setHistory(cur => [saved, ...cur.filter(x => x.name !== saved.name)].slice(0, 8));
-    } catch (e) { setError(getErrorMessage(e)); } finally { setBusyLabel(""); }
+    } catch (e) { setError(getErrorMessage(e)); } finally { setBusyLabel(""); setProgress(null); }
   };
 
   // ── DPP generation ─────────────────────────────────────────────────────────
@@ -762,7 +834,7 @@ function Home() {
           <div className="sg-tabs"><button className={sourceMode === "upload" ? "active" : ""} onClick={() => setSourceMode("upload")}><UploadCloud size={14}/> Upload</button><button className={sourceMode === "paste" ? "active" : ""} onClick={() => setSourceMode("paste")}><Paperclip size={14}/> Paste notes</button></div>
           {sourceMode === "upload" ? <button className={`sg-dropzone ${dragging ? "dragging" : ""}`} onClick={() => fileInput.current?.click()} onDragOver={e => { e.preventDefault(); if (!busyLabel) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={handleDrop} disabled={Boolean(busyLabel)} aria-label="Upload study material"><input ref={fileInput} type="file" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg" onChange={handleFile} hidden/><UploadCloud size={25}/><strong>{fileName || (dragging ? "Release to upload" : "Drop your material here")}</strong><span>{fileName ? `${text.length.toLocaleString()} characters extracted` : "PDF, DOCX, TXT, MD, JPG or PNG · max 4 MB"}</span><em>Scanned PDFs & images are OCR-ready</em><em>Browse files · or drag & drop</em></button> : <><textarea className="sg-textarea sg-paste" value={text} onChange={e => { setText(e.target.value); setFileName("Pasted study notes"); setPack(null); setTopics([]); }} placeholder="Paste notes, textbook extracts, or class material here…"/><button className="sg-detectbutton" onClick={detectCurrentTopics} disabled={Boolean(busyLabel) || text.trim().length < 20}><RefreshCw size={13}/> Detect topics</button></>}
           {text && <div className="sg-source-preview"><div className="sg-source-meta"><span><Check size={13}/> Material ready</span><small>{text.length.toLocaleString()} chars</small></div><textarea value={text} onChange={e => { setText(e.target.value); setTopics([]); setPack(null); setChatAnswer(null); }} aria-label="Study material"/><button className="sg-clear" onClick={reset}>Clear source</button></div>}
-          {busyLabel && <div className="sg-progress"><Loader2 size={15} className="sg-spin"/> {busyLabel}</div>}
+          {busyLabel && <div className="sg-progress"><Loader2 size={15} className="sg-spin"/> {progress?.message || busyLabel}{progress?.progress && <span className="sg-progress-count"> ({progress.progress})</span>}</div>}
           <div className="sg-divider" /><div className="sg-step">02 · TOPICS</div><h3 className="sg-subhead">Choose what to focus on</h3><div className="sg-topicrow"><button className={!selectedTopic ? "selected" : ""} onClick={() => setSelectedTopic("")}>All topics</button>{topics.map(t => <button className={selectedTopic === t ? "selected" : ""} key={t} onClick={() => setSelectedTopic(t)}>{t}</button>)}</div>{!topics.length && <p className="sg-hint">Topics are detected automatically after upload.</p>}
           <div className="sg-divider" /><div className="sg-step">03 · OUTPUTS</div><h3 className="sg-subhead">Build your study system <span>{outputs.length} selected</span></h3><div className="sg-outputgrid">{outputOptions.map(o => <button key={o.id} className={`sg-output ${outputs.includes(o.id) ? "selected" : ""}`} onClick={() => toggleOutput(o.id)}><span className="sg-check">{outputs.includes(o.id) && <Check size={12}/>}</span><strong>{o.label}</strong><small>{o.hint}</small></button>)}</div>
           <div className="sg-controls">
