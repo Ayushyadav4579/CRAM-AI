@@ -60,6 +60,11 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        // Study generation makes multiple sequential Gemini API calls and can
+        // easily exceed the default http-proxy timeout. Set a generous timeout
+        // so the connection stays alive while the backend works.
+        timeout: 120_000,
+        proxyTimeout: 120_000,
       },
     },
   },

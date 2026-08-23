@@ -33,7 +33,7 @@ if (process.env.GEMINI_API_KEY) {
   logger.warn("GEMINI_API_KEY not found — running in demo mode");
 }
 
-app.listen(port, (err) => {
+const server = app.listen(port, (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
@@ -41,3 +41,8 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
 });
+
+// Study generation makes multiple sequential Gemini API calls that can take
+// 60-120+ seconds. Increase socket timeouts so the connection stays alive.
+server.timeout = 180_000; // 3 minutes
+server.keepAliveTimeout = 180_000;

@@ -66,7 +66,12 @@ function getModel() {
     );
   }
   const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-  return new GoogleGenerativeAI(key).getGenerativeModel({ model });
+  // 90-second per-request timeout — study generation involves long prompts
+  // with large extracted text and multi-part output schemas.
+  return new GoogleGenerativeAI(key).getGenerativeModel(
+    { model },
+    { timeout: 90_000 },
+  );
 }
 
 // ── Retry-aware AI generation ───────────────────────────────────────────────
