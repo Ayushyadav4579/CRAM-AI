@@ -299,6 +299,9 @@ async function generateWithType(
   const sourceText = knowledge?.hasMathContent ? buildMathContext(text, knowledge) : text;
   const prompt = buildPrompt(type, sourceText, difficulty, language, topic, count, knowledge);
 
+  // Accumulate valid items across retries — never discard good content
+  const allValidItems: unknown[] = [];
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const raw = parseModelJson(await generateWithRetry(model, prompt));
@@ -320,13 +323,23 @@ async function generateWithType(
       // Validate, ground, and deduplicate
       const validated = validateSection(type, items, text);
 
-      if (validated.length > 0) {
-        return { type, title, items: validated };
+      // Accumulate valid items (deduplicate against already-collected items)
+      for (const item of validated) {
+        const itemStr = JSON.stringify(item);
+        if (!allValidItems.some(existing => JSON.stringify(existing) === itemStr)) {
+          allValidItems.push(item);
+        }
       }
 
-      if (attempt === MAX_RETRIES) {
-        return { type, title, items: validated };
+      // If we have enough items or this was the last attempt, return what we have
+      if (allValidItems.length >= count || attempt === MAX_RETRIES) {
+        return { type, title, items: allValidItems.slice(0, count) };
       }
+
+      // Log partial progress for debugging
+      console.info(
+        `[STUDY] "${type}" attempt ${attempt + 1}: ${validated.length}/${items.length} valid, ${allValidItems.length}/${count} total — retrying for more`,
+      );
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
 
@@ -338,9 +351,9 @@ async function generateWithType(
       // Rate limited → stop validation retries, return what we have
       if (isRateLimitError(errMsg)) {
         console.warn(
-          `[STUDY] Stopping validation retries for "${type}" due to rate limit — returning partial results`,
+          `[STUDY] Stopping validation retries for "${type}" due to rate limit — returning ${allValidItems.length} items`,
         );
-        return { type, title, items: [] };
+        return { type, title, items: allValidItems };
       }
 
       // Detect token limit exceeded — truncate source and retry
@@ -350,12 +363,19 @@ async function generateWithType(
         }
       }
       if (attempt === MAX_RETRIES) {
+        // Return whatever valid items we collected rather than throwing
+        if (allValidItems.length > 0) {
+          console.warn(
+            `[STUDY] "${type}" returning ${allValidItems.length} items after final attempt error`,
+          );
+          return { type, title, items: allValidItems };
+        }
         throw new Error(`Study pack generation failed: ${errMsg.length > 200 ? errMsg.slice(0, 200) + "..." : errMsg}`);
       }
     }
   }
 
-  return { type, title, items: [] };
+  return { type, title, items: allValidItems };
 }
 
 // ── Demo mode helpers ────────────────────────────────────────────────────────

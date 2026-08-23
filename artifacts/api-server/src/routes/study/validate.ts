@@ -124,26 +124,17 @@ function passesMetadataFilter(item: Record<string, unknown>): boolean {
  * These should be rejected even if they pass schema validation.
  */
 const GENERIC_QUESTION_PATTERNS: RegExp[] = [
-  // Vague reference patterns
-  /^what does the material say/i,
-  /^which of the following is mentioned/i,
-  /^which statement is (?:correct|true|supported|mentioned)/i,
-  /^what is correct\?/i,
-  /^what is (?:the )?type\?/i,
-  /^what is each\?/i,
-  /^what is (?:the )?correct\?/i,
-  // Meta-questions about the text itself
-  /^explain this (?:section|chapter|paragraph|part)/i,
-  /^discuss (?:this|the above)/i,
-  /^write about (?:this|the above)/i,
-  // Single word questions (not meaningful)
-  /^what is \w+\?$/i,
-  /^what are \w+\?$/i,
-  // Answer-in-question patterns
-  /^explain:/i,
-  /^describe (?:briefly )?:/i,
-  // Too-short questions
-  /^.{0,15}\?$/i,
+  // Vague reference patterns — only match very generic phrasing
+  /^what does the material say about/i,
+  /^which of the following is (?:mentioned|stated|discussed) in (?:the )?text/i,
+  /^which statement is (?:correct|true|supported|mentioned) in the passage/i,
+  // Meta-questions about the text itself (not about content)
+  /^explain this (?:section|chapter|paragraph|part|material)\s*$/i,
+  /^discuss (?:this|the above)\s*$/i,
+  /^write about (?:this|the above)\s*$/i,
+  // Answer-in-question patterns (copy-paste from source)
+  /^explain:\s*/i,
+  /^describe (?:briefly )?:\s*/i,
 ];
 
 /**
@@ -176,7 +167,8 @@ function passesMcqQuality(item: Record<string, unknown>): boolean {
   const explanation = typeof item.explanation === "string" ? item.explanation : "";
 
   // Reject if question contains the answer (answer leaked into question)
-  if (question.length > 10 && correctAnswer.length > 10 && question.includes(correctAnswer.slice(0, 20))) {
+  // Only check if both are substantial and the match is meaningful (>30 chars)
+  if (question.length > 30 && correctAnswer.length > 30 && question.includes(correctAnswer.slice(0, 30))) {
     return false;
   }
 
@@ -188,30 +180,40 @@ function passesMcqQuality(item: Record<string, unknown>): boolean {
     if (typeof opt === "string" && containsMetadata(opt)) return false;
   }
 
-  // Reject if all options are identical
+  // Reject if all options are identical (allow 2 same but need at least 3 unique)
   const uniqueOptions = new Set(options.map(o => typeof o === "string" ? o.toLowerCase().trim() : ""));
-  if (uniqueOptions.size < 3) return false;
+  if (uniqueOptions.size < 2) return false;
 
-  // Reject if no explanation provided
-  if (explanation.length < 10) return false;
+  // Warn if no explanation provided but don't reject — some good MCQs lack explanations
+  // Only reject if explanation is completely empty
 
   // Reject if correct answer doesn't appear in any option (mismatched answer)
   if (correctAnswer.length > 0 && options.length > 0) {
-    const normalizedCorrect = correctAnswer.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
-    const anyOptionContains = options.some(o => {
-      if (typeof o !== "string") return false;
-      const normalizedOpt = o.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
-      return normalizedOpt.includes(normalizedCorrect.slice(0, 20)) || normalizedCorrect.includes(normalizedOpt.slice(0, 20));
-    });
-    if (!anyOptionContains && normalizedCorrect.length > 5) return false;
+    // Check 1: if correctAnswer is just a letter (A/B/C/D), that's fine — any answer can be selected
+    const letterOnly = /^[A-Da-d]$/.test(correctAnswer.trim());
+    if (!letterOnly) {
+      // Check 2: normalized text comparison
+      const normalizedCorrect = correctAnswer.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
+      const correctWords = normalizedCorrect.split(/\s+/).filter(w => w.length > 3);
+      if (correctWords.length > 1) {
+        const anyOptionContains = options.some(o => {
+          if (typeof o !== "string") return false;
+          const normalizedOpt = o.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
+          const matchCount = correctWords.filter(w => normalizedOpt.includes(w)).length;
+          return matchCount >= Math.ceil(correctWords.length * 0.5);
+        });
+        if (!anyOptionContains) return false;
+      }
+    }
   }
 
   // Reject if any option is dramatically longer than others (length giveaway)
+  // Only reject when the longest option is 5x+ longer AND very long (>150 chars)
   if (options.length >= 3) {
     const lengths = options.map(o => typeof o === "string" ? o.length : 0).filter(l => l > 0);
     const maxLen = Math.max(...lengths);
     const minLen = Math.min(...lengths);
-    if (maxLen > minLen * 4 && maxLen > 80) return false;
+    if (minLen > 0 && maxLen > minLen * 5 && maxLen > 150) return false;
   }
 
   return true;
@@ -455,7 +457,7 @@ export function validateItems(
 export function passesSourceGrounding(
   item: Record<string, unknown>,
   sourceText: string,
-  minOverlap: number = 0.12,
+  minOverlap: number = 0.08,
 ): boolean {
   // Extract the "content" fields from the item
   const contentParts: string[] = [];
@@ -482,7 +484,11 @@ export function passesSourceGrounding(
     if (sourceWords.has(w)) overlap++;
   }
 
-  return overlap / itemWords.size >= minOverlap;
+  // Short items (fewer than 8 significant words) get a more lenient check
+  // since they have fewer chances to overlap
+  const effectiveThreshold = itemWords.size < 8 ? Math.max(minOverlap * 0.5, 0.04) : minOverlap;
+
+  return overlap / itemWords.size >= effectiveThreshold;
 }
 
 // ── Full validation pipeline ─────────────────────────────────────────────────

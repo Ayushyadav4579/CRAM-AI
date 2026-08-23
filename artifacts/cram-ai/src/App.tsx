@@ -650,7 +650,7 @@ function Home() {
           sourceReference: typeof r.sourceReference === "string" ? r.sourceReference : undefined,
         };
       }).filter(q => q.options.length >= 2 && q.question);
-      if (questions.length === 0) throw new Error("No valid MCQ questions were generated. Try again with different settings.");
+      if (questions.length === 0) throw new Error("No MCQ questions could be generated from this source material. The document may not contain enough educational content for quiz generation. Try uploading a different chapter or adjusting your settings.");
       setDppQuestions(questions);
       setDppPhase("intro");
     } catch (e) { setError(getErrorMessage(e)); setDppPhase("config"); } finally { setBusyLabel(""); }
@@ -791,7 +791,7 @@ function Home() {
   if (section.type === "quiz") return <QuizCard item={item} index={ii} key={ii}/>;
   if (section.type === "notes" || section.type === "short_notes") {
     const r = item && typeof item === "object" ? item as ItemRecord : {};
-    return <div className="sg-resultitem sg-note-card" key={ii}><b>{String(ii + 1).padStart(2, "0")}</b>
+    return <div className="sg-resultitem sg-note-card" key={ii}>
       <div><strong>{formatValue(r.heading)}</strong><p>{formatValue(r.content)}</p>
       {typeof r.sourceReference === "string" && r.sourceReference && <small className="sg-source-ref">📖 {r.sourceReference}</small>}</div>
     </div>;
@@ -876,7 +876,7 @@ function Home() {
     </div>;
   }
   return <div className="sg-resultitem" key={ii}><b>{String(ii + 1).padStart(2, "0")}</b><pre>{prettyItem(item)}</pre></div>;
-}) : <p className="sg-emptysection">No source-supported items were found.</p>}</article>)}</div></>}
+}) : <p className="sg-emptysection">Some items could not be generated from this source. Valid items have been retained.</p>}</article>)}</div></>}
         </section>
       </div>
 
