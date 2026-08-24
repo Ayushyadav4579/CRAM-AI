@@ -806,27 +806,42 @@ export function buildDifficultWordsPrompt(
 ): string {
   return `You are identifying difficult or specialized vocabulary from study material.
 
-TASK: Find ${count} difficult or domain-specific words that a student should understand.
+TASK: Find up to ${count} genuinely difficult, technical, or subject-specific words/terms that a student should understand to fully comprehend this material.
 
-OUTPUT SCHEMA (return a JSON array of objects):
+OUTPUT SCHEMA (return a JSON array — return FEWER than ${count} if the source doesn't contain enough genuinely difficult words):
 [
   {
-    "word": "the difficult or specialized word",
-    "meaning": "clear explanation of what this word means in this specific context",
+    "word": "the difficult or specialized word or short term",
+    "meaning": "a clear, concise definition or explanation of what this word means — write a proper definition, NOT a sentence from the source",
     "example": "an example sentence or usage from the source (if available — omit if not in source)",
     "sourceReference": "section name or paragraph reference"
   }
 ]
 
-DIFFICULT WORDS RULES:
-1. Focus on DOMAIN-SPECIFIC TERMINOLOGY — not common English words.
-   ✗ BAD: "significant", "important", "analysis"
-   ✓ GOOD: "photosynthesis", "stoichiometry", "mitochondria", "oscillation"
-2. Include technical terms, jargon, and words specific to the subject.
-3. Meanings must reflect how the source uses the word in context.
-4. Examples must come from the source when available.
-5. Prioritize words that are ESSENTIAL for understanding the material.
-6. Do NOT include words that any educated person would know.
+DIFFICULT WORDS RULES — CRITICAL:
+1. SELECTIVITY: Only pick words that are genuinely unfamiliar, technical, or confusing for the target student.
+   ✗ REJECT: "important", "significant", "analysis", "correct", "ability", "material", "chapter"
+   ✓ ACCEPT: "photosynthesis", "stoichiometry", "mitochondria", "oscillation", "metamorphosis"
+
+2. WORD vs SENTENCE: "word" must be a single word or short term (max 5 words), NOT a sentence.
+   ✗ BAD: "He was usually very well and happy"
+   ✓ GOOD: "hay fever"
+
+3. MEANING must be a PROPER DEFINITION, not a source sentence repeated.
+   ✗ BAD: meaning = "He was usually very well and happy except for attacks of hay fever in summer."
+   ✓ GOOD: meaning = "An allergic condition causing sneezing and irritation, commonly triggered by pollen."
+
+4. NO DUPLICATES: Do not repeat the same word or term.
+
+5. NO METADATA: Do not select words from: ISBN, price, publisher, copyright, page numbers, headers/footers.
+
+6. SUBJECT AWARENESS:
+   - Literature: character names (if unusual), literary terms, archaic words, difficult vocabulary
+   - Science: technical terms, process names, structure names, chemical terms
+   - History: historical terms, names of movements, political terms
+   - Mathematics: mathematical terms, variable names, operation names
+
+7. Each word must actually appear in the uploaded source.
 
 ${metadataGuardrails()}
 ${antiHallucinationRules()}

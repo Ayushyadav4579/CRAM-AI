@@ -124,7 +124,7 @@ function passesMetadataFilter(item: Record<string, unknown>): boolean {
  * These should be rejected even if they pass schema validation.
  */
 const GENERIC_QUESTION_PATTERNS: RegExp[] = [
-  // Vague reference patterns — only match very generic phrasing
+  // Vague reference patterns
   /^what does the material say about/i,
   /^which of the following is (?:mentioned|stated|discussed) in (?:the )?text/i,
   /^which statement is (?:correct|true|supported|mentioned) in the passage/i,
@@ -135,6 +135,11 @@ const GENERIC_QUESTION_PATTERNS: RegExp[] = [
   // Answer-in-question patterns (copy-paste from source)
   /^explain:\s*/i,
   /^describe (?:briefly )?:\s*/i,
+  // Very short vague questions
+  /^what is (?:this|that|the type|correct|incorrect|the answer)\s*\??\s*$/i,
+  /^what are (?:these|those)\s*\??\s*$/i,
+  /^what is the (?:meaning|significance|importance) of this\s*\??\s*$/i,
+  /^summarize (?:this|the above|the material)\s*$/i,
 ];
 
 /**
@@ -420,6 +425,75 @@ function passesFormulaQuality(item: Record<string, unknown>): boolean {
   return true;
 }
 
+// ── Difficult words quality check ─────────────────────────────────────────
+
+/**
+ * Common English words that are NOT genuinely difficult or domain-specific.
+ */
+const COMMON_WORDS = new Set([
+  "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+  "her", "was", "one", "our", "out", "has", "his", "how", "its", "may",
+  "new", "now", "old", "see", "way", "who", "did", "get", "let", "say",
+  "she", "too", "use", "ability", "important", "significant", "analysis",
+  "correct", "incorrect", "correctly", "incorrectly", "true", "false",
+  "question", "answer", "option", "material", "chapter", "section",
+  "price", "publication", "published", "author", "edition",
+]);
+
+/**
+ * Check if a difficult word entry is genuinely useful.
+ */
+function passesDifficultWordsQuality(item: Record<string, unknown>): boolean {
+  const word = typeof item.word === "string" ? item.word.trim() : "";
+  const meaning = typeof item.meaning === "string" ? item.meaning.trim() : "";
+
+  // Word must exist
+  if (!word) return false;
+
+  // Word must be a word or short term, not a sentence
+  if (word.length > 60) return false;
+  if (word.split(" ").length > 5) return false;
+
+  // Reject single common words
+  if (word.split(" ").length === 1 && COMMON_WORDS.has(word.toLowerCase())) return false;
+
+  // Meaning must be a real definition, not a sentence from the source
+  if (meaning.length < 5) return false;
+  // Reject meanings that are just the source sentence repeated
+  if (meaning.length > 200) return false;
+
+  // Reject metadata-contaminated entries
+  if (containsMetadata(word)) return false;
+  if (containsMetadata(meaning)) return false;
+
+  // Reject entries where meaning starts with generic patterns
+  const badMeaningPatterns = [
+    /^the correct/, /^this is/, /^it is the/, /^what is the/,
+    /^he was/, /^she was/, /^they were/, /^it was/,
+  ];
+  for (const p of badMeaningPatterns) {
+    if (p.test(meaning.toLowerCase())) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Case-insensitive deduplication for difficult words by word field.
+ */
+function deduplicateDifficultWords(items: unknown[]): unknown[] {
+  const seenWords = new Set<string>();
+  return items.filter((item) => {
+    if (!item || typeof item !== "object") return true;
+    const record = item as Record<string, unknown>;
+    const word = typeof record.word === "string" ? record.word.trim().toLowerCase() : "";
+    if (!word) return true;
+    if (seenWords.has(word)) return false;
+    seenWords.add(word);
+    return true;
+  });
+}
+
 // ── Schema validation ────────────────────────────────────────────────────────
 
 /**
@@ -589,6 +663,14 @@ export function validateSection(
         if (!item || typeof item !== "object") return false;
         return passesFormulaQuality(item as Record<string, unknown>);
       });
+      break;
+
+    case "difficult_words":
+      validated = validated.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        return passesDifficultWordsQuality(item as Record<string, unknown>);
+      });
+      validated = deduplicateDifficultWords(validated);
       break;
 
     case "true_false":

@@ -151,6 +151,13 @@ const OTHER_SUBJECT_KEYWORDS: Record<string, Set<string>> = {
     "character", "plot", "theme", "setting", "conflict",
     "imagery", "rhetoric", "irony", "allegory", "motif",
     "author", "novel", "poem", "drama", "dialogue",
+    "narrator", "protagonist", "antagonist", "climax", "resolution",
+    "flashback", "foreshadowing", "exposition", "rising action", "falling action",
+    "literary", "textual", "passage", "chapter", "lesson",
+    "treasure", "merchant", "venice", "shylock", "antonia",
+    "horace", "danby", "robbery", "locksmith", "fire alarm",
+    "trust", "dishonest", "honest", "syndicate", "confidence",
+    "curiosity", "temptation", "unexpected", "twist",
   ]),
   computer_science: new Set([
     "algorithm", "data structure", "binary", "array", "linked list",
