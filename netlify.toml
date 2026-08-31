@@ -2,8 +2,15 @@
   # Netlify runs install automatically, but we use pnpm
   command = "npx pnpm install --no-frozen-lockfile && npx pnpm --filter @workspace/cram-ai build"
   publish = "artifacts/cram-ai/dist"
+  functions = "netlify/functions"
 
-# SPA fallback: serve index.html for all routes that don't match static files
+# API routes: forward to the Netlify Function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# SPA fallback: serve index.html for all client-side routes
 [[redirects]]
   from = "/*"
   to = "/index.html"

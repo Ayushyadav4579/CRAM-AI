@@ -1,2 +1,5 @@
-# SPA fallback — serve index.html for all client-side routes
+# API routes: forward to Netlify Functions (must come before SPA fallback)
+/api/*  /.netlify/functions/api/:splat  200
+
+# SPA fallback: serve index.html for all client-side routes
 /*    /index.html   200
