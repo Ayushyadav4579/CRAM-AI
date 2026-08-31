@@ -908,9 +908,9 @@ function Home() {
   }
   if (section.type === "mindmap") {
     const r = item && typeof item === "object" ? item as ItemRecord : {};
-    return <div className="sg-resultitem sg-mm-item" key={ii}><b>{String(ii + 1).padStart(2, "0")}</b>
-      <div className="sg-mm-branch"><strong>🌿 {formatValue(r.branch)}</strong></div>
-      {Array.isArray(r.children) && <div className="sg-mm-children">{r.children.map((c, ci) => <span className="sg-mm-child" key={ci}>{formatValue(c)}</span>)}</div>}
+    return <div className="sg-resultitem sg-mm-item" key={ii}>
+      <div className="sg-mm-branch">{formatValue(r.branch)}</div>
+      {Array.isArray(r.children) && <div className="sg-mm-children">{r.children.map((c, ci) => <div className="sg-mm-child" key={ci}>{formatValue(c)}</div>)}</div>}
       {typeof r.sourceReference === "string" && r.sourceReference && <small className="sg-source-ref">📖 {r.sourceReference}</small>}
     </div>;
   }

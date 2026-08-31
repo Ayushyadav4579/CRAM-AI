@@ -284,22 +284,36 @@ function passesMindmapQuality(item: Record<string, unknown>): boolean {
   const branch = typeof item.branch === "string" ? item.branch : "";
   const children = Array.isArray(item.children) ? item.children : [];
 
-  // Branch should be short (1-5 words)
-  if (branch.length > 50) return false;
-
-  // Children should be short
-  for (const child of children) {
-    if (typeof child === "string" && child.length > 60) return false;
-  }
+  // Branch must be non-empty and meaningful
+  if (branch.length < 2) return false;
 
   // Branch should not be metadata
   if (containsMetadata(branch)) return false;
 
-  // Branch should not be empty
-  if (branch.length < 2) return false;
+  // Branch should not be a meaningless fragment (too short to be educational)
+  if (branch.length < 4) return false;
+
+  // Branch should not be excessively long
+  if (branch.length > 80) return false;
+
+  // Branch should not be truncated with ellipsis
+  if (/\.{2,}|…/.test(branch)) return false;
 
   // Should have at least one child
   if (children.length === 0) return false;
+
+  // Validate children: each must be a meaningful phrase
+  const validChildren = children.filter((child) => {
+    if (typeof child !== "string") return false;
+    if (child.length < 3) return false; // too short to be meaningful
+    if (child.length > 120) return false; // excessively long for a mind map node
+    if (/\.{2,}|…/.test(child)) return false; // no truncation with ellipsis
+    if (/^(no information|no data|n\/a|none|unknown)$/i.test(child.trim())) return false; // no filler
+    return true;
+  });
+
+  // Need at least one valid child
+  if (validChildren.length === 0) return false;
 
   return true;
 }

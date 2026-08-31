@@ -369,10 +369,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sg-fc-back { padding: 10px 12px; background: #fff; color: #405466; font-size: 10px; line-height: 1.55; word-wrap: break-word; }
 
 /* Mind map */
-.sg-mm-item { border: 1px solid #d4e7df; border-radius: 10px; padding: 10px 12px; margin: 4px 0; background: #f7fbf8; width: 100%; min-width: 0; }
-.sg-mm-branch { color: var(--teal); font-size: 11px; margin-bottom: 6px; word-wrap: break-word; }
-.sg-mm-children { display: flex; flex-wrap: wrap; gap: 5px; }
-.sg-mm-child { border: 1px solid #d9e9e4; background: #fff; border-radius: 14px; padding: 4px 8px; font-size: 9px; color: #4c6170; }
+.sg-mm-item { border: 1px solid #d4e7df; border-radius: 10px; padding: 10px 12px; margin: 4px 0; background: #f7fbf8; width: 100%; min-width: 0; display: block; }
+.sg-mm-branch { color: var(--teal); font-size: 12px; font-weight: 600; margin-bottom: 6px; word-wrap: break-word; overflow-wrap: break-word; line-height: 1.5; }
+.sg-mm-children { display: block; padding-left: 12px; margin-top: 4px; }
+.sg-mm-child { display: block; border-left: 2px solid #b8d8cc; padding: 4px 0 4px 10px; margin: 3px 0; font-size: 10px; line-height: 1.55; color: #4c6170; word-wrap: break-word; overflow-wrap: break-word; }
 
 /* Definitions — full-width block */
 .sg-def-item { border: 1px solid #d4e7df; border-radius: 10px; padding: 10px 12px; margin: 4px 0; width: 100%; display: block; }

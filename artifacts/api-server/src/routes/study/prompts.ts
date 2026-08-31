@@ -655,40 +655,78 @@ export function buildMindmapPrompt(
   language: string,
   topic: string | null,
 ): string {
-  return `You are creating a structured mind map from study material.
+  return `You are creating a STUDY MIND MAP from educational material. This will help students revise and understand the chapter structure quickly.
 
-TASK: Identify the hierarchical structure of the source material and create a mind map.
+TASK: Analyze the source and create a hierarchical mind map organized by the major topics, concepts, characters, events, or processes in the material.
 
-OUTPUT SCHEMA (return a JSON array of objects, each representing a main branch):
+OUTPUT SCHEMA (return a JSON array of objects, each representing one major branch):
 [
   {
-    "branch": "Main topic or concept (1-3 words)",
-    "children": ["sub-concept 1 (1-3 words)", "sub-concept 2 (1-3 words)", "sub-concept 3 (1-3 words)"],
+    "branch": "Major concept or topic title",
+    "children": ["Complete meaningful fact or sub-concept", "Another key fact", "Important detail"],
     "sourceReference": "section name or paragraph reference"
   }
 ]
 
-MIND MAP RULES:
-1. Each branch represents a MAJOR TOPIC or CONCEPT from the material.
-   Branch names must be SHORT (1-3 words maximum).
-2. Children are sub-concepts, key facts, or related ideas under that branch.
-   Each child must also be SHORT (1-5 words maximum).
-3. The hierarchy must reflect the LOGICAL STRUCTURE of the material:
-   - Central concept → main branches → sub-branches
-   - Cause → effect relationships
-   - Classification → categories → examples
-   - Process → steps → outcomes
-   - Definition → properties → applications
+MIND MAP GENERATION RULES:
+
+1. BRANCH TITLES (the "branch" field):
+   - Must be a clear, recognizable topic or concept name.
+   - Typically 2-5 words, but can be longer if the concept requires it.
+   - Must NOT be random fragments extracted from the source.
+   ✗ BAD: "Studied two weeks", "Targeted fifteen thousand jewels"
+   ✓ GOOD: "Horace Danby's Background", "Character Profile", "Key Events", "Photosynthesis", "Chemical Reactions"
+
+2. CHILDREN (the "children" array):
+   - Each child must contain ONE COMPLETE MEANINGFUL idea — not a fragmented phrase.
+   - Target 3-15 words per child. Up to 18 words for an important complete fact.
+   - Must be specific, educational, and directly supported by the source.
+   - NEVER use "..." (ellipsis) to truncate content — rewrite into a concise complete phrase instead.
+   ✗ BAD: ["Studied two weeks", "Targeted jewels", "Served sentence"]
+   ✓ GOOD: ["Studied the house for two weeks before the robbery", "Planned to steal jewels worth £15,000", "Had previously served a fifteen-year prison sentence"]
+   ✗ BAD: ["Photosynthesis", "Plants", "Light", "Energy"]
+   ✓ GOOD: ["Occurs in chloroplasts of plant cells", "Requires sunlight, water, and CO₂", "Produces glucose and releases oxygen", "Converts light energy into chemical energy"]
+
+3. HIERARCHICAL STRUCTURE — adapt to the subject:
+
+   For a STORY/LITERARY CHAPTER:
+   → Characters (with traits and motivations)
+   → Plot (major events in sequence)
+   → Conflict/Problem
+   → Important events/actions
+   → Theme/Message
+   → Key details and descriptions
+
+   For SCIENCE:
+   → Main concept and definition
+   → Components/types/structure
+   → Properties/characteristics
+   → Process/mechanism
+   → Examples
+   → Applications/uses
+
+   For MATHEMATICS:
+   → Core concepts
+   → Definitions
+   → Properties and conditions
+   → Methods/steps
+   → Formulas (if any)
+   → Examples
+
+   For HISTORY/SOCIAL SCIENCE:
+   → Causes
+   → Key events
+   → Important people
+   → Effects/consequences
+   → Significant dates/locations
+
 4. Include 4-8 main branches covering the breadth of the material.
-5. Children should be SPECIFIC and EDUCATIONAL, not vague labels.
-   ✗ BAD branch: "Important Information"
-   ✗ BAD children: ["Facts", "Details", "More info"]
-   ✓ GOOD branch: "Photosynthesis"
-   ✓ GOOD children: ["Light reactions", "Calvin cycle", "Chloroplasts", "ATP production"]
-6. Use relationship labels in child text where useful:
-   "requires", "produces", "leads to", "contains", "differs from", "causes", "inhibits", "activates"
-7. Do NOT create a flat list — use genuine hierarchical relationships.
-8. Every branch MUST have at least 2 children. If you cannot think of 2 sub-concepts, merge that branch into another.
+5. Every branch MUST have at least 2-5 children.
+6. Do NOT create a flat list of random sentences — organize information logically.
+7. Every fact MUST be supported by the source. Do not hallucinate.
+8. Do NOT include metadata (page numbers, ISBN, publisher info, copyright).
+9. Do NOT repeat the same information across different branches.
+10. Do NOT use placeholder text like "Important Information", "Key Facts", "More details".
 
 ${metadataGuardrails()}
 ${antiHallucinationRules()}
