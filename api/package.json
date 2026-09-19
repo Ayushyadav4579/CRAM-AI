@@ -2,10 +2,16 @@
   "name": "@workspace/api",
   "private": true,
   "type": "module",
+  "scripts": {
+    "dev": "tsx ./dev-server.ts",
+    "start": "tsx ./dev-server.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@google/genai": "^2.13.0",
     "mammoth": "^1.9.1",
     "pdf-parse": "1.1.4",
+    "tsx": "^4.21.0",
     "zod": "3.25.76"
   },
   "devDependencies": {

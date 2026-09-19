@@ -15,11 +15,15 @@
     "@google/genai": "^2.13.0",
     "mammoth": "^1.9.1",
     "pdf-parse": "1.1.4",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
     "zod": "3.25.76"
   },
   "devDependencies": {
     "prettier": "^3.9.6",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "vite": "^7.3.2",
+    "@vitejs/plugin-react": "^5.0.4"
   },
   "packageManager": "pnpm@10.12.1"
 }

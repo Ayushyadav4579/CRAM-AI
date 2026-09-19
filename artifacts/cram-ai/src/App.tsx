@@ -12,11 +12,13 @@ import NotFound from "@/pages/not-found";
 import { Route, Router as WouterRouter, Switch } from "wouter";
 
 const queryClient = new QueryClient();
-type OutputType = "notes" | "short_notes" | "mcq" | "short_answer" | "long_answer" | "true_false" | "fill_blank" | "flashcards" | "mindmap" | "definitions" | "formulas" | "difficult_words" | "mnemonics";
+type OutputType = "notes" | "mcq" | "short_answer" | "long_answer" | "true_false" | "fill_blank" | "flashcards" | "mindmap" | "definitions" | "formulas" | "difficult_words" | "mnemonics";
 type Difficulty = "easy" | "medium" | "detailed";
 type Language = "English" | "Hindi";
 type SavedPack = { id: string; name: string; characters: number; createdAt: string; text: string; pack: StudyPack };
-type ProgressEvent = { phase: string; type?: string; title?: string; message: string; itemCount?: number; progress?: string; error?: string };
+type ProgressEvent = { phase: string; type?: string; title?: string; message?: string; itemCount?: number; progress?: string; error?: string; status?: number; pack?: StudyPack };
+type StageStatus = "pending" | "active" | "done" | "error";
+type GenStage = { id: string; label: string; status: StageStatus; itemCount?: number };
 type ItemRecord = Record<string, unknown>;
 
 // ── DPP Types ─────────────────────────────────────────────────────────────────
@@ -48,15 +50,23 @@ type DppResultRecord = {
   difficulty: string;
 };
 
+const SECTION_ORDER: OutputType[] = [
+  "notes", "mcq", "short_answer", "long_answer", "mindmap", "flashcards",
+  "true_false", "fill_blank", "definitions", "formulas", "difficult_words", "mnemonics",
+];
+function sectionSortIndex(type: string): number {
+  const idx = SECTION_ORDER.indexOf(type as OutputType);
+  return idx === -1 ? SECTION_ORDER.length : idx;
+}
+
 const outputOptions: { id: OutputType; label: string; hint: string; icon?: string }[] = [
   { id: "notes", label: "Detailed notes", hint: "Structured overview" },
-  { id: "short_notes", label: "Quick revision", hint: "High-yield points" },
   { id: "mcq", label: "MCQs", hint: "Exam practice" },
   { id: "short_answer", label: "Short answers", hint: "Exam-ready writing" },
   { id: "long_answer", label: "Long answers", hint: "Detailed responses" },
   { id: "true_false", label: "True / False", hint: "Fast checks" },
   { id: "fill_blank", label: "Fill blanks", hint: "Recall practice" },
-  { id: "flashcards", label: "Flashcards", hint: "Quick recall" },
+  { id: "flashcards", label: "Flashcards", hint: "Active recall" },
   { id: "mindmap", label: "Mind map", hint: "See the structure" },
   { id: "definitions", label: "Definitions", hint: "Key terminology" },
   { id: "formulas", label: "Formulas", hint: "Important relationships" },
@@ -113,60 +123,77 @@ type GenerateStreamInput = { text: string; types: string[]; count: number; langu
 async function generateStudyPackStream(
   input: GenerateStreamInput,
   onProgress: (event: ProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<StudyPack> {
-  const response = await fetch("/api/study/generate-stream", {
+  const response = await fetch(apiUrl("/api/study/generate"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({
+      text: input.text,
+      types: input.types,
+      count: input.count,
+      language: input.language,
+      difficulty: input.difficulty,
+      topic: input.topic ?? undefined,
+    }),
+    signal,
   });
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-    throw new Error(errorData.error || `HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type") || "";
+  const streaming = contentType.includes("text/event-stream");
+
+  if (!response.ok && !streaming) {
+    const failure = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(failure?.error || `Generation failed (HTTP ${response.status}).`);
   }
 
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("Stream not supported");
+  // Non-streaming fallback (buffering proxy or older deployment): the whole
+  // study pack arrives as a single JSON body.
+  if (!streaming || !response.body) {
+    const body = await response.json().catch(() => null) as (StudyPack & { error?: string }) | null;
+    if (!body || body.error) {
+      throw new Error(body?.error || "Generation failed. Please try again.");
+    }
+    onProgress({ phase: "complete", message: "Your study pack is ready." });
+    return body;
+  }
 
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let result: StudyPack | null = null;
+  let pack: StudyPack | null = null;
+  let failure = "";
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
     buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    let eventType = "";
-    for (const line of lines) {
-      if (line.startsWith("event: ")) {
-        eventType = line.slice(7).trim();
-      } else if (line.startsWith("data: ")) {
-        const dataStr = line.slice(6);
-        try {
-          const data = JSON.parse(dataStr);
-          if (eventType === "progress") {
-            onProgress(data as ProgressEvent);
-          } else if (eventType === "section_complete") {
-            onProgress(data as ProgressEvent);
-          } else if (eventType === "complete") {
-            result = data as StudyPack;
-          } else if (eventType === "error") {
-            throw new Error(data.error || "Generation failed");
-          }
-        } catch (e) {
-          if (e instanceof SyntaxError) continue;
-          throw e;
-        }
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const dataLine = frame.split("\n").find((line) => line.startsWith("data:"));
+      if (!dataLine) continue;
+      const payload = dataLine.slice(5).trim();
+      if (!payload) continue;
+      let event: ProgressEvent;
+      try {
+        event = JSON.parse(payload) as ProgressEvent;
+      } catch {
+        continue;
       }
+      onProgress(event);
+      if (event.phase === "complete" && event.pack) pack = event.pack;
+      else if (event.phase === "error") failure = event.error || "Generation failed. Please try again.";
     }
   }
 
-  if (!result) throw new Error("No complete study pack received");
-  return result;
+  if (failure) throw new Error(failure);
+  if (!pack) throw new Error("Generation ended before your study pack was complete. Please try again.");
+  return pack;
+}
+
+function isAbortError(error: unknown): boolean {
+  return Boolean(error) && typeof error === "object" && (error as { name?: string }).name === "AbortError";
 }
 
 // ── Existing display cards ─────────────────────────────────────────────────────
@@ -193,7 +220,11 @@ function McqCard({ item, index }: { item: unknown; index: number }) {
   const topic = typeof r.topic === "string" ? r.topic : undefined;
   const difficulty = typeof r.difficulty === "string" ? r.difficulty : undefined;
   const correctIdx = correctAnswer
-    ? options.findIndex((o) => formatValue(o) === correctAnswer || formatValue(o).includes(correctAnswer))
+    ? options.findIndex((o) => {
+        const clean = formatValue(o).replace(/^[A-D][).)\]:]\s*/, "").trim();
+        const cleanAnswer = correctAnswer.replace(/^[A-D][).)\]:]\s*/, "").trim();
+        return clean === cleanAnswer || formatValue(o) === correctAnswer || formatValue(o).includes(correctAnswer);
+      })
     : -1;
 
   return <div className="sg-quiz-card">
@@ -232,12 +263,15 @@ function QuizCard({ item, index }: { item: unknown; index: number }) {
       </div>
     </div>;
   }
-  if (r.question !== undefined && r.answer !== undefined && r.type === "fill_blank") {
+  // Detect fill_blank items by shape: question + answer, no options, no statement, no front/back
+  const isFillBlank = r.question !== undefined && r.answer !== undefined && !r.options && !r.statement && !r.front && !r.back && typeof r.answer === "string";
+  if (isFillBlank) {
     return <div className="sg-quiz-card sg-fb-card">
       <div className="sg-quiz-number">Q{index + 1}</div>
       <div className="sg-quiz-main">
         <strong>{formatValue(r.question)}</strong>
         <div className="sg-fb-answer"><b>Answer:</b> {formatValue(r.answer)}</div>
+        {typeof r.hint === "string" && r.hint && <div className="sg-quiz-explanation"><b>Hint:</b> {r.hint}</div>}
         {typeof r.sourceReference === "string" && r.sourceReference && <div className="sg-quiz-meta"><span className="sg-source-ref">📖 {r.sourceReference}</span></div>}
       </div>
     </div>;
@@ -607,18 +641,281 @@ function DppResult({ questions, answers, elapsed, config, onBack }: {
   </div>;
 }
 
+// ── Study Pack document export ────────────────────────────────────────────────
+// The downloaded file is a complete, print-ready document: cover, table of
+// contents, then one cleanly formatted section per selected study format.
+
+const DOCUMENT_STYLES = `
+:root { --ink:#172a3d; --muted:#718092; --line:#dce5e9; --teal:#176c6b; --mint:#dff0e9; --coral:#c25a38; }
+* { box-sizing:border-box; }
+body { margin:0; background:#fff; color:var(--ink); font:15px/1.65 Georgia, "Times New Roman", serif; }
+.page { max-width:820px; margin:0 auto; padding:48px 40px 64px; }
+.cover { border-bottom:3px solid var(--teal); padding-bottom:26px; margin-bottom:30px; }
+.eyebrow { font:700 11px/1 Arial, sans-serif; letter-spacing:.16em; text-transform:uppercase; color:var(--coral); margin:0 0 10px; }
+h1 { font-size:34px; line-height:1.15; margin:0 0 12px; }
+.lead { color:var(--muted); font-size:15px; margin:0 0 20px; }
+.meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 24px; margin:0; }
+.meta div { border-top:1px solid var(--line); padding-top:7px; }
+.meta dt { font:700 10px/1.4 Arial, sans-serif; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+.meta dd { margin:3px 0 0; font-size:14px; }
+.toc { page-break-after:always; margin:0 0 10px; }
+.toc h2 { font-size:20px; margin:0 0 12px; }
+.toc ol { margin:0; padding-left:22px; }
+.toc li { font-size:14px; margin-bottom:6px; }
+.toc-count { color:var(--muted); font-size:12px; font-family:Arial, sans-serif; }
+section.format { page-break-before:always; padding-top:10px; }
+section.format:first-of-type { page-break-before:auto; }
+.format-title { display:flex; align-items:baseline; gap:10px; font-size:22px; margin:0 0 6px; border-bottom:2px solid var(--mint); padding-bottom:9px; }
+.format-index { font:800 12px/1 Arial, sans-serif; color:var(--teal); letter-spacing:.1em; }
+.format-count { margin-left:auto; font:600 11px/1 Arial, sans-serif; color:var(--muted); }
+.format-body { padding-top:16px; }
+.item { margin:0 0 20px; page-break-inside:avoid; }
+.q { font-size:15px; margin:0 0 9px; }
+.qnum { font-weight:700; color:var(--teal); }
+ol.options { list-style:none; margin:0 0 9px; padding:0; }
+ol.options li { display:flex; gap:9px; align-items:flex-start; padding:7px 11px; border:1px solid var(--line); border-radius:6px; margin-bottom:6px; font-size:14px; font-family:Arial, sans-serif; }
+ol.options li.correct { border-color:#8fc7b7; background:#f1faf6; }
+.opt-letter { font-weight:700; color:var(--teal); min-width:14px; }
+.opt-tick { margin-left:auto; color:#276e42; font-weight:700; font-size:11px; white-space:nowrap; }
+.answer { font-size:14px; margin:0 0 5px; }
+.explanation { font-size:13.5px; color:#3d4d5c; margin:0; }
+ul.keypoints { margin:4px 0 0; padding-left:20px; }
+ul.keypoints li { font-size:13.5px; margin-bottom:3px; }
+.notes-item h3 { font-size:16px; margin:0 0 7px; }
+.notes-item p { margin:0 0 9px; }
+.tf-flag { display:inline-block; font:700 11px/1 Arial, sans-serif; letter-spacing:.08em; padding:5px 10px; border-radius:999px; margin-bottom:7px; }
+.tf-flag.true { background:#e7f6ee; color:#276e42; }
+.tf-flag.false { background:#fdece7; color:#9a432e; }
+.flashcard { border:1px solid var(--line); border-radius:8px; padding:11px 13px; page-break-inside:avoid; margin-bottom:11px; background:#fbfdfc; }
+.fc-topic { font:700 11.5px/1.4 Arial, sans-serif; color:var(--teal); text-transform:uppercase; letter-spacing:.06em; margin:0 0 5px; }
+.fc-point { margin:0; font-size:14.5px; }
+.mindmap-root { display:inline-block; background:var(--teal); color:#fff; font:700 13px/1.4 Arial, sans-serif; padding:9px 15px; border-radius:8px; margin-bottom:16px; }
+.mindmap-branches { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
+.mindmap-branch { border:1px solid var(--line); border-left:4px solid var(--teal); border-radius:8px; padding:11px 13px; page-break-inside:avoid; background:#fbfdfc; }
+.mindmap-branch h4 { font-size:14px; margin:0 0 7px; }
+.mindmap-branch ul { margin:0; padding-left:17px; }
+.mindmap-branch li { font-size:13px; margin-bottom:4px; }
+.term { font-size:15px; margin:0 0 4px; }
+.definition { font-size:14px; margin:0 0 5px; }
+.example { font-size:13px; color:#3d4d5c; margin:0; }
+.formula-eq { font:700 15px/1.5 "Courier New", monospace; background:#f4f7f3; border:1px solid var(--line); border-radius:6px; padding:9px 11px; margin:0 0 7px; }
+.vars { font-size:13px; margin:0 0 5px; }
+.vars code { background:#eef4f1; padding:1px 6px; border-radius:4px; font-size:12.5px; }
+.trick { font-size:14px; margin:0 0 4px; }
+.doc-footer { margin-top:34px; border-top:1px solid var(--line); padding-top:13px; color:var(--muted); font:12px/1.7 Arial, sans-serif; }
+@media print { .page { padding:0; max-width:none; } body { font-size:11.5pt; } .mindmap-branches { break-inside:avoid; } }
+`;
+
+function escapeHtml(value: unknown): string {
+  return formatValue(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function stripOptionPrefix(value: string): string {
+  return value.replace(/^[A-Da-d][).:\]]\s*/, "").trim();
+}
+function sameOption(left: string, right: string): boolean {
+  const a = stripOptionPrefix(left).toLowerCase();
+  const b = stripOptionPrefix(right).toLowerCase();
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+function documentSectionItems(type: string, items: unknown[]): string {
+  return items.map((item, index) => {
+    const r = item && typeof item === "object" ? item as ItemRecord : {};
+    const n = index + 1;
+
+    if (type === "mcq") {
+      const options = Array.isArray(r.options) ? r.options.map(formatValue) : [];
+      const answer = formatValue(r.correctAnswer ?? r.answer ?? "");
+      const list = options.map((option, optionIndex) => {
+        const correct = answer ? sameOption(option, answer) : false;
+        return `<li class="${correct ? "correct" : ""}"><span class="opt-letter">${String.fromCharCode(65 + optionIndex)}</span><span>${escapeHtml(option)}</span>${correct ? '<span class="opt-tick">✓ correct</span>' : ""}</li>`;
+      }).join("");
+      return `<div class="item">
+        <p class="q"><span class="qnum">Q${n}.</span> ${escapeHtml(r.question ?? r.statement ?? r.content)}</p>
+        ${list ? `<ol class="options">${list}</ol>` : ""}
+        ${answer ? `<p class="answer"><strong>Answer:</strong> ${escapeHtml(answer)}</p>` : ""}
+        ${r.explanation ? `<p class="explanation"><strong>Explanation:</strong> ${escapeHtml(r.explanation)}</p>` : ""}
+      </div>`;
+    }
+
+    if (type === "true_false") {
+      const isTrue = r.answer === true;
+      return `<div class="item">
+        <p class="q"><span class="qnum">${n}.</span> ${escapeHtml(r.statement ?? r.question)}</p>
+        <span class="tf-flag ${isTrue ? "true" : "false"}">${isTrue ? "TRUE" : "FALSE"}</span>
+        ${r.explanation ? `<p class="explanation"><strong>Explanation:</strong> ${escapeHtml(r.explanation)}</p>` : ""}
+      </div>`;
+    }
+
+    if (type === "fill_blank") {
+      return `<div class="item">
+        <p class="q"><span class="qnum">${n}.</span> ${escapeHtml(r.question)}</p>
+        <p class="answer"><strong>Answer:</strong> ${escapeHtml(r.answer)}</p>
+        ${r.hint ? `<p class="explanation"><strong>Hint:</strong> ${escapeHtml(r.hint)}</p>` : ""}
+      </div>`;
+    }
+
+    if (type === "short_answer" || type === "long_answer") {
+      const keyPoints = Array.isArray(r.keyPoints) ? r.keyPoints : [];
+      return `<div class="item">
+        <p class="q"><span class="qnum">Q${n}.</span> ${escapeHtml(r.question)}</p>
+        <p class="answer">${escapeHtml(r.answer)}</p>
+        ${keyPoints.length ? `<p class="explanation"><strong>Key points:</strong></p><ul class="keypoints">${keyPoints.map(point => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}
+      </div>`;
+    }
+
+    if (type === "notes") {
+      const paragraphs = formatValue(r.content).split(/\n{2,}/).filter(Boolean);
+      return `<div class="item notes-item">
+        ${r.heading ? `<h3>${escapeHtml(r.heading)}</h3>` : ""}
+        ${paragraphs.map(paragraph => `<p>${escapeHtml(paragraph)}</p>`).join("")}
+      </div>`;
+    }
+
+    if (type === "flashcards") {
+      return `<div class="flashcard">
+        <p class="fc-topic">${escapeHtml(r.front)}</p>
+        <p class="fc-point">${escapeHtml(r.back)}</p>
+      </div>`;
+    }
+
+    if (type === "definitions") {
+      return `<div class="item">
+        <p class="term"><strong>${escapeHtml(r.term)}</strong></p>
+        <p class="definition">${escapeHtml(r.definition)}</p>
+        ${r.example ? `<p class="example"><em>Example:</em> ${escapeHtml(r.example)}</p>` : ""}
+      </div>`;
+    }
+
+    if (type === "formulas") {
+      const variables = Array.isArray(r.variables) ? r.variables : [];
+      return `<div class="item">
+        <p class="formula-eq">${escapeHtml(r.formula)}</p>
+        ${r.name ? `<p class="term">${escapeHtml(r.name)}</p>` : ""}
+        ${variables.length ? `<p class="vars">${variables.map(variable => {
+          const v = variable && typeof variable === "object" ? variable as ItemRecord : {};
+          return `<code>${escapeHtml(v.symbol)}</code> ${escapeHtml(v.meaning)}`;
+        }).join(" &nbsp;·&nbsp; ")}</p>` : ""}
+        ${r.conditions ? `<p class="example"><em>When:</em> ${escapeHtml(r.conditions)}</p>` : ""}
+      </div>`;
+    }
+
+    if (type === "difficult_words") {
+      return `<div class="item">
+        <p class="term"><strong>${escapeHtml(r.word)}</strong></p>
+        <p class="definition">${escapeHtml(r.meaning)}</p>
+        ${r.example ? `<p class="example"><em>Usage:</em> ${escapeHtml(r.example)}</p>` : ""}
+      </div>`;
+    }
+
+    if (type === "mnemonics") {
+      return `<div class="item">
+        <p class="term"><strong>${escapeHtml(r.fact ?? r.term ?? r.content)}</strong></p>
+        <p class="trick"><strong>Trick:</strong> ${escapeHtml(r.trick ?? r.back)}</p>
+        ${r.whyItWorks ? `<p class="explanation"><strong>Why it works:</strong> ${escapeHtml(r.whyItWorks)}</p>` : ""}
+        ${r.recallCue ? `<p class="explanation"><strong>Recall cue:</strong> ${escapeHtml(r.recallCue)}</p>` : ""}
+      </div>`;
+    }
+
+    return `<div class="item"><p class="definition">${escapeHtml(prettyItem(item))}</p></div>`;
+  }).join("");
+}
+
+function documentMindmapHtml(items: unknown[], centralTopic: string): string {
+  const branches = items.map(item => {
+    const r = item && typeof item === "object" ? item as ItemRecord : {};
+    const children = Array.isArray(r.children) ? r.children : [];
+    return `<div class="mindmap-branch">
+      <h4>${escapeHtml(r.branch)}</h4>
+      ${children.length ? `<ul>${children.map(child => `<li>${escapeHtml(child)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }).join("");
+  return `<div class="mindmap-root">${escapeHtml(centralTopic)}</div><div class="mindmap-branches">${branches}</div>`;
+}
+
+const DIFFICULTY_LABELS: Record<string, string> = { easy: "Easy", medium: "Exam ready", detailed: "Deep dive" };
+
+function buildStudyPackDocument(pack: StudyPack, meta: {
+  fileName: string;
+  subject?: string;
+  gradeLevel?: string;
+  chapter?: string;
+  language: string;
+  difficulty: string;
+}): string {
+  // Only formats that actually produced content are included - the document
+  // never contains an empty heading.
+  const sections = [...pack.sections]
+    .filter(section => section.items.length > 0)
+    .sort((a, b) => sectionSortIndex(a.type) - sectionSortIndex(b.type));
+
+  const toc = sections.map((section, index) =>
+    `<li><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(section.title)}</strong> <span class="toc-count">(${section.items.length} items)</span></li>`
+  ).join("");
+
+  const body = sections.map((section, index) => {
+    const content = section.type === "mindmap"
+      ? documentMindmapHtml(section.items, pack.title)
+      : documentSectionItems(section.type, section.items);
+    return `<section class="format">
+      <h2 class="format-title"><span class="format-index">${String(index + 1).padStart(2, "0")}</span>${escapeHtml(section.title)}<span class="format-count">${section.items.length} items</span></h2>
+      <div class="format-body">${content}</div>
+    </section>`;
+  }).join("");
+
+  const rows: [string, string][] = [
+    ["Source", meta.fileName],
+    meta.subject && meta.subject !== "general" ? ["Subject", meta.subject.charAt(0).toUpperCase() + meta.subject.slice(1).replace(/_/g, " ")] : null,
+    meta.gradeLevel ? ["Class / level", meta.gradeLevel] : null,
+    meta.chapter ? ["Chapter", meta.chapter] : null,
+    ["Language", meta.language],
+    ["Depth", DIFFICULTY_LABELS[meta.difficulty] ?? meta.difficulty],
+    ["Formats included", String(sections.length)],
+    ["Generated", new Date().toLocaleString()],
+  ].filter(Boolean) as [string, string][];
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escapeHtml(pack.title)} · CRAM AI Study Pack</title>
+<style>${DOCUMENT_STYLES}</style>
+</head>
+<body>
+<div class="page">
+<header class="cover">
+<p class="eyebrow">CRAM AI · Study Pack</p>
+<h1>${escapeHtml(pack.title)}</h1>
+<p class="lead">${escapeHtml(pack.summary)}</p>
+<dl class="meta">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+</header>
+<nav class="toc"><h2>Table of Contents</h2><ol>${toc}</ol></nav>
+${body}
+<footer class="doc-footer">Generated by CRAM AI from the study material you provided - every item is grounded in that source.<br />Tip: print this page (Ctrl/Cmd + P) to save it as a PDF.</footer>
+</div>
+</body>
+</html>`;
+}
+
 // ── Main Home Component ────────────────────────────────────────────────────────
 
 function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const [sourceMode, setSourceMode] = useState<"upload" | "paste">("upload");
   const [fileName, setFileName] = useState(""); const [text, setText] = useState(""); const [topics, setTopics] = useState<string[]>([]);
-  const [selectedTopic, setSelectedTopic] = useState(""); const [outputs, setOutputs] = useState<OutputType[]>(["notes", "mcq", "mnemonics"]);
+  const [selectedTopic, setSelectedTopic] = useState("");  const [outputs, setOutputs] = useState<OutputType[]>(["notes", "mcq", "flashcards"]);
   const [difficulty, setDifficulty] = useState<Difficulty>("medium"); const [language, setLanguage] = useState<Language>("English"); const [count, setCount] = useState(10);
   const [pack, setPack] = useState<StudyPack | null>(null); const [history, setHistory] = useState<SavedPack[]>([]);
   const [chatQuestion, setChatQuestion] = useState(""); const [chatAnswer, setChatAnswer] = useState<StudyChatResponse | null>(null);
   const [error, setError] = useState(""); const [busyLabel, setBusyLabel] = useState(""); const [dragging, setDragging] = useState(false); const [copied, setCopied] = useState(false); const [qualityMessage, setQualityMessage] = useState(""); const [subjectInfo, setSubjectInfo] = useState<{subject?: string; gradeLevel?: string; chapter?: string; isQuestionBank?: boolean; hasMathContent?: boolean} | null>(null);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
+  const [stages, setStages] = useState<GenStage[]>([]);
 
   // ── DPP state ─────────────────────────────────────────────────────────────
   const [dppPhase, setDppPhase] = useState<"idle" | "config" | "generating" | "intro" | "test" | "result">("idle");
@@ -628,6 +925,7 @@ function Home() {
   const [dppElapsed, setDppElapsed] = useState(0);
   const [dppStartTime, setDppStartTime] = useState(0);
   const [dppHistory, setDppHistory] = useState<DppResultRecord[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
   const dppFinishRef = useRef<((answers: DppAnswer[], elapsed: number) => void) | null>(null);
 
   const topicMutation = useMutation({ mutationFn: (value: { text: string }) => detectStudyTopics(value) });
@@ -640,6 +938,8 @@ function Home() {
   useEffect(() => { localStorage.setItem("cram-ai-dpp-history", JSON.stringify(dppHistory.slice(0, 20))); }, [dppHistory]);
 
   const selectedLabels = useMemo(() => outputOptions.filter(o => outputs.includes(o.id)).map(o => o.label), [outputs]);
+  const maxEnabled = outputs.includes("mcq") && outputs.includes("short_answer") && outputs.includes("long_answer");
+  useEffect(() => { if (!maxEnabled && count === 100) setCount(10); }, [maxEnabled, count]);
   const setSource = (name: string, extractedText: string) => { setFileName(name); setText(extractedText); setPack(null); setChatAnswer(null); setError(""); setTopics([]); };
 
   const detect = async (source: string) => { try { setBusyLabel("Finding chapters and topics…"); const result = await topicMutation.mutateAsync({ text: source }); setTopics(result.topics); setSelectedTopic(""); } catch (e) { setError(getErrorMessage(e)); } finally { setBusyLabel(""); } };
@@ -667,27 +967,108 @@ function Home() {
   const handleFile = async (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) await processFile(file); };
   const handleDrop = async (event: DragEvent<HTMLButtonElement>) => { event.preventDefault(); setDragging(false); if (!busyLabel) { const file = event.dataTransfer.files?.[0]; if (file) await processFile(file); } };
 
-  const resultText = useMemo(() => !pack ? "" : [pack.title, pack.summary, ...pack.sections.flatMap(s => [`\n## ${s.title}`, ...s.items.map((item, i) => `${i + 1}. ${prettyItem(item)}`)])].join("\n"), [pack]);
+  const resultText = useMemo(() => {
+    if (!pack) return "";
+    const ordered = [...pack.sections].filter(s => s.items.length > 0).sort((a, b) => sectionSortIndex(a.type) - sectionSortIndex(b.type));
+    return [pack.title, pack.summary, ...ordered.flatMap(s => [`\n## ${s.title}`, ...s.items.map((item, i) => `${i + 1}. ${prettyItem(item)}`)])].join("\n");
+  }, [pack]);
   const copyPack = async () => { if (!resultText) return; try { await navigator.clipboard.writeText(resultText); setCopied(true); setTimeout(() => setCopied(false), 1800); } catch { setError("Copy failed. Please copy the result manually."); } };
-  const downloadPack = () => { if (!resultText) return; const blob = new Blob([resultText], { type: "text/plain;charset=utf-8" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `${(pack?.title || "study-pack").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.txt`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); };
+  const downloadPack = () => {
+    if (!pack || !pack.sections.some(section => section.items.length > 0)) return;
+    const html = buildStudyPackDocument(pack, {
+      fileName: fileName || "Study material",
+      subject: subjectInfo?.subject,
+      gradeLevel: subjectInfo?.gradeLevel,
+      chapter: subjectInfo?.chapter,
+      language,
+      difficulty,
+    });
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(pack.title || "study-pack").replace(/[^a-z0-9]+/gi, "-").toLowerCase().replace(/^-+|-+$/g, "") || "study-pack"}.html`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+  // Only formats that actually produced content are shown - no empty headings.
+  const sortedSections = useMemo(() => {
+    if (!pack) return [];
+    return [...pack.sections].filter(section => section.items.length > 0).sort((a, b) => sectionSortIndex(a.type) - sectionSortIndex(b.type));
+  }, [pack]);
+  const emptyFormats = useMemo(() => {
+    if (!pack) return [];
+    return pack.sections.filter(section => section.items.length === 0).map(section => outputOptions.find(option => option.id === section.type)?.label ?? section.type);
+  }, [pack]);
+
   const toggleOutput = (id: OutputType) => setOutputs(cur => cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
+
+  const applyProgress = (event: ProgressEvent) => {
+    setProgress(event);
+    setStages(current => current.map(stage => {
+      if (event.phase === "complete")
+        return stage.status === "error" ? stage : { ...stage, status: "done" as StageStatus };
+      if (stage.id === "source") {
+        if (event.phase === "analyzing") return { ...stage, status: "active" as StageStatus };
+        if (event.phase === "type-done" && event.type === "source")
+          return { ...stage, status: "done" as StageStatus };
+        return stage;
+      }
+      if (!event.type || stage.id !== event.type) return stage;
+      if (event.phase === "type-start") return { ...stage, status: "active" as StageStatus };
+      if (event.phase === "type-done") return { ...stage, status: "done" as StageStatus, itemCount: event.itemCount };
+      if (event.phase === "type-empty") return { ...stage, status: "error" as StageStatus, itemCount: 0 };
+      if (event.phase === "error") return { ...stage, status: "error" as StageStatus };
+      return stage;
+    }));
+  };
+
+  const cancelGeneration = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusyLabel("");
+    setProgress(null);
+    setStages([]);
+  };
 
   const generate = async (quickType?: OutputType) => {
     if (text.trim().length < 20) return setError("Upload a PDF/notes file or paste at least 20 characters first.");
     const selected = quickType ? [quickType] : outputs;
     if (!selected.length) return setError("Select at least one output.");
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setError("");
+    setProgress(null);
+    setStages([
+      { id: "source", label: "Analyzing source", status: "pending" },
+      ...selected.map(id => ({
+        id,
+        label: `Generating ${outputOptions.find(option => option.id === id)?.label ?? id}`,
+        status: "pending" as StageStatus,
+      })),
+    ]);
+    setBusyLabel("Generating your study pack…");
     try {
-      setError("");
-      setProgress(null);
-      setBusyLabel(quickType === "mnemonics" ? "Creating memory tricks…" : "Building your study system…");
       const result = await generateStudyPackStream(
         { text, types: selected, count, language, difficulty, topic: selectedTopic || null },
-        (event) => setProgress(event),
+        applyProgress,
+        controller.signal,
       );
+      if (controller.signal.aborted) return;
       setPack(result); setChatAnswer(null);
       const saved = { id: crypto.randomUUID(), name: fileName || "Untitled study material", characters: text.length, createdAt: new Date().toISOString(), text, pack: result } satisfies SavedPack;
       setHistory(cur => [saved, ...cur.filter(x => x.name !== saved.name)].slice(0, 8));
-    } catch (e) { setError(getErrorMessage(e)); } finally { setBusyLabel(""); setProgress(null); }
+    } catch (e) {
+      // A user-initiated cancel is not an error.
+      if (!isAbortError(e)) setError(getErrorMessage(e));
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      setBusyLabel("");
+      setProgress(null);
+      setStages([]);
+    }
   };
 
   // ── DPP generation ─────────────────────────────────────────────────────────
@@ -781,6 +1162,9 @@ function Home() {
     : "";
 
   // DPP is active — show full-screen DPP view
+  const doneStages = stages.filter(stage => stage.status === "done" || stage.status === "error").length;
+  const stagePercent = stages.length ? Math.round((stages.filter(stage => stage.status === "done").length / stages.length) * 100) : 0;
+
   if (dppPhase !== "idle") {
     return <div className="sg-shell">
       <header className="sg-topbar">
@@ -834,7 +1218,6 @@ function Home() {
           <div className="sg-tabs"><button className={sourceMode === "upload" ? "active" : ""} onClick={() => setSourceMode("upload")}><UploadCloud size={14}/> Upload</button><button className={sourceMode === "paste" ? "active" : ""} onClick={() => setSourceMode("paste")}><Paperclip size={14}/> Paste notes</button></div>
           {sourceMode === "upload" ? <button className={`sg-dropzone ${dragging ? "dragging" : ""}`} onClick={() => fileInput.current?.click()} onDragOver={e => { e.preventDefault(); if (!busyLabel) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={handleDrop} disabled={Boolean(busyLabel)} aria-label="Upload study material"><input ref={fileInput} type="file" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg" onChange={handleFile} hidden/><UploadCloud size={25}/><strong>{fileName || (dragging ? "Release to upload" : "Drop your material here")}</strong><span>{fileName ? `${text.length.toLocaleString()} characters extracted` : "PDF, DOCX, TXT, MD, JPG or PNG · max 4 MB"}</span><em>Scanned PDFs & images are OCR-ready</em><em>Browse files · or drag & drop</em></button> : <><textarea className="sg-textarea sg-paste" value={text} onChange={e => { setText(e.target.value); setFileName("Pasted study notes"); setPack(null); setTopics([]); }} placeholder="Paste notes, textbook extracts, or class material here…"/><button className="sg-detectbutton" onClick={detectCurrentTopics} disabled={Boolean(busyLabel) || text.trim().length < 20}><RefreshCw size={13}/> Detect topics</button></>}
           {text && <div className="sg-source-preview"><div className="sg-source-meta"><span><Check size={13}/> Material ready</span><small>{text.length.toLocaleString()} chars</small></div><textarea value={text} onChange={e => { setText(e.target.value); setTopics([]); setPack(null); setChatAnswer(null); }} aria-label="Study material"/><button className="sg-clear" onClick={reset}>Clear source</button></div>}
-          {busyLabel && <div className="sg-progress"><Loader2 size={15} className="sg-spin"/> {progress?.message || busyLabel}{progress?.progress && <span className="sg-progress-count"> ({progress.progress})</span>}</div>}
           <div className="sg-divider" /><div className="sg-step">02 · TOPICS</div><h3 className="sg-subhead">Choose what to focus on</h3><div className="sg-topicrow"><button className={!selectedTopic ? "selected" : ""} onClick={() => setSelectedTopic("")}>All topics</button>{topics.map(t => <button className={selectedTopic === t ? "selected" : ""} key={t} onClick={() => setSelectedTopic(t)}>{t}</button>)}</div>{!topics.length && <p className="sg-hint">Topics are detected automatically after upload.</p>}
           <div className="sg-divider" /><div className="sg-step">03 · OUTPUTS</div><h3 className="sg-subhead">Build your study system <span>{outputs.length} selected</span></h3><div className="sg-outputgrid">{outputOptions.map(o => <button key={o.id} className={`sg-output ${outputs.includes(o.id) ? "selected" : ""}`} onClick={() => toggleOutput(o.id)}><span className="sg-check">{outputs.includes(o.id) && <Check size={12}/>}</span><strong>{o.label}</strong><small>{o.hint}</small></button>)}</div>
           <div className="sg-controls">
@@ -853,15 +1236,33 @@ function Home() {
                 <button type="button" className={`sg-language-choice ${language === "Hindi" ? "selected" : ""}`} onClick={() => setLanguage("Hindi")} aria-pressed={language === "Hindi"}><span className="sg-language-badge">हि</span><span><b>Hindi</b><small>हिंदी आउटपुट</small></span>{language === "Hindi" && <Check size={14} className="sg-choice-tick"/>}</button>
               </div>
             </div>
-            <div className="sg-question-control"><span className="sg-field-label">No. of questions / items</span><div className="sg-countgrid" role="radiogroup" aria-label="Number of questions"><button type="button" className={`sg-countoption ${count === 5 ? "selected" : ""}`} onClick={() => setCount(5)} aria-pressed={count === 5}><span className="sg-countcheck">{count === 5 && <Check size={12} strokeWidth={3}/>}</span><span>5</span></button><button type="button" className={`sg-countoption ${count === 10 ? "selected" : ""}`} onClick={() => setCount(10)} aria-pressed={count === 10}><span className="sg-countcheck">{count === 10 && <Check size={12} strokeWidth={3}/>}</span><span>10</span></button><button type="button" className={`sg-countoption ${count === 15 ? "selected" : ""}`} onClick={() => setCount(15)} aria-pressed={count === 15}><span className="sg-countcheck">{count === 15 && <Check size={12} strokeWidth={3}/>}</span><span>15</span></button><button type="button" className={`sg-countoption ${count === 20 ? "selected" : ""}`} onClick={() => setCount(20)} aria-pressed={count === 20}><span className="sg-countcheck">{count === 20 && <Check size={12} strokeWidth={3}/>}</span><span>20</span></button><button type="button" className={`sg-countoption sg-countmax ${count === 100 ? "selected" : ""}`} onClick={() => setCount(100)} aria-pressed={count === 100}><span className="sg-countcheck">{count === 100 && <Check size={12} strokeWidth={3}/>}</span><span>Maximum</span></button></div><small className="sg-controlhint">Maximum = exhaustively generate distinct source-supported questions, up to 100.</small></div></div>
-          <button className="sg-generate" onClick={() => generate()} disabled={Boolean(busyLabel) || !text || !outputs.length}>{busyLabel ? <><Loader2 size={15} className="sg-spin"/> Working…</> : <><Sparkles size={15}/> Generate study system <ChevronDown size={15} style={{ transform: "rotate(-90deg)" }}/></>}</button><p className="sg-selected-summary">{selectedLabels.join(" · ")}</p>{text && <button className="sg-resetbutton" onClick={reset}>Start a new study session</button>}
+            <div className="sg-question-control"><span className="sg-field-label">No. of questions / items</span><div className="sg-countgrid" role="radiogroup" aria-label="Number of questions"><button type="button" className={`sg-countoption ${count === 5 ? "selected" : ""}`} onClick={() => setCount(5)} aria-pressed={count === 5}><span className="sg-countcheck">{count === 5 && <Check size={12} strokeWidth={3}/>}</span><span>5</span></button><button type="button" className={`sg-countoption ${count === 10 ? "selected" : ""}`} onClick={() => setCount(10)} aria-pressed={count === 10}><span className="sg-countcheck">{count === 10 && <Check size={12} strokeWidth={3}/>}</span><span>10</span></button><button type="button" className={`sg-countoption ${count === 15 ? "selected" : ""}`} onClick={() => setCount(15)} aria-pressed={count === 15}><span className="sg-countcheck">{count === 15 && <Check size={12} strokeWidth={3}/>}</span><span>15</span></button><button type="button" className={`sg-countoption ${count === 20 ? "selected" : ""}`} onClick={() => setCount(20)} aria-pressed={count === 20}><span className="sg-countcheck">{count === 20 && <Check size={12} strokeWidth={3}/>}</span><span>20</span></button><button type="button" disabled={!maxEnabled} className={`sg-countoption sg-countmax ${count === 100 ? "selected" : ""} ${!maxEnabled ? "sg-countdisabled" : ""}`} onClick={() => maxEnabled && setCount(100)} aria-pressed={count === 100} title={maxEnabled ? "Maximum = exhaustively generate distinct source-supported questions, up to 100" : "Select MCQs + Short Answer + Long Answer to enable Maximum"}><span className="sg-countcheck">{count === 100 && <Check size={12} strokeWidth={3}/>}</span><span>Maximum</span></button></div><small className="sg-controlhint">{maxEnabled ? "Maximum = exhaustively generate distinct source-supported questions, up to 100." : "Select MCQs + Short Answer + Long Answer to enable Maximum."}</small></div></div>
+          {stages.length > 0 ? <div className="sg-genpanel">
+            <div className="sg-genpanel-head">
+              <Loader2 size={16} className="sg-spin sg-genpanel-spinner" />
+              <div className="sg-genpanel-text">
+                <strong>{busyLabel || "Generating your study pack…"}</strong>
+                <small>{progress?.message || "Working through your selected formats…"}</small>
+              </div>
+              <span className="sg-genpanel-count">{doneStages}/{stages.length}</span>
+            </div>
+            <div className="sg-genbar" role="progressbar" aria-valuenow={stagePercent} aria-valuemin={0} aria-valuemax={100}><div className="sg-genbar-fill" style={{ width: `${stagePercent}%` }} /></div>
+            <ul className="sg-stagelist">
+              {stages.map(stage => <li className={`sg-stage ${stage.status}`} key={stage.id}>
+                <span className="sg-stage-icon">{stage.status === "done" ? <Check size={11} strokeWidth={3}/> : stage.status === "active" ? <Loader2 size={11} className="sg-spin"/> : stage.status === "error" ? <X size={11}/> : <span className="sg-stage-dot"/>}</span>
+                <span className="sg-stage-label">{stage.label}</span>
+                {stage.status === "done" && stage.itemCount ? <span className="sg-stage-count">{stage.itemCount}</span> : null}
+              </li>)}
+            </ul>
+            <button type="button" className="sg-cancel" onClick={cancelGeneration}><X size={13}/> Cancel generation</button>
+          </div> : <button className="sg-generate" onClick={() => generate()} disabled={!text || !outputs.length}><Sparkles size={15}/> Generate study system <ChevronDown size={15} style={{ transform: "rotate(-90deg)" }}/></button>}<p className="sg-selected-summary">{selectedLabels.join(" · ")}</p>{text && <button className="sg-resetbutton" onClick={reset}>Start a new study session</button>}
         </section>
         <section className="sg-card sg-preview">
-          {!pack ? <div className="sg-empty"><Sparkles size={42}/><h3>Your learning system will appear here.</h3><p>Upload a chapter, then generate quizzes, questions, notes and memory tricks from it.</p><div className="sg-emptyfeatures"><span>🧠 Mnemonics</span><span>📝 DPP Test</span><span>💬 Ask notes</span></div></div> : <><div className="sg-resulttop"><div className="sg-kicker">AI study system · ready</div><h2>{pack.title}</h2><p>{pack.summary}</p><div className="sg-resultmeta"><span className="sg-pill">{fileName || "Study material"}</span><span className="sg-pill">{pack.sections.length} formats</span><span className="sg-pill">{language} · {difficulty}</span>{count === 100 && <span className="sg-pill sg-maxpill">MAXIMUM COVERAGE</span>}<div className="sg-resultactions"><button className="sg-actionbutton" onClick={copyPack}><Clipboard size={13}/>{copied ? "Copied!" : "Copy"}</button><button className="sg-actionbutton" onClick={downloadPack}><Download size={13}/>Download</button></div></div></div><div className="sg-resultbody">{pack.sections.map((section, si) => <article className="sg-resultsection" key={`${section.type}-${si}`}><div className={`sg-sectionlabel ${(section.type === "short_answer" || section.type === "long_answer") ? "sg-sectionlabel-centered" : ""}`}><span>{String(si + 1).padStart(2, "0")} · {section.title}</span><span>{section.items.length} items</span></div>{section.items.length ? section.items.map((item, ii) => {
+          {!pack ? <div className="sg-empty"><Sparkles size={42}/><h3>Your learning system will appear here.</h3><p>Upload a chapter, then generate quizzes, questions, notes and memory tricks from it.</p><div className="sg-emptyfeatures"><span>🧠 Mnemonics</span><span>📝 DPP Test</span><span>💬 Ask notes</span></div></div> : <><div className="sg-resulttop"><div className="sg-kicker">AI study system · ready</div><h2>{pack.title}</h2><p>{pack.summary}</p><div className="sg-resultmeta"><span className="sg-pill">{fileName || "Study material"}</span><span className="sg-pill">{sortedSections.length} formats · {sortedSections.reduce((n, s) => n + s.items.length, 0)} items</span><span className="sg-pill">{language} · {difficulty}</span>{count === 100 && <span className="sg-pill sg-maxpill">MAXIMUM COVERAGE</span>}<div className="sg-resultactions"><button className="sg-actionbutton" onClick={copyPack}><Clipboard size={13}/>{copied ? "Copied!" : "Copy"}</button><button className="sg-actionbutton" onClick={downloadPack}><Download size={13}/>Download</button></div></div></div>{emptyFormats.length > 0 && <div className="sg-emptyfmt"><AlertCircle size={15}/><span><strong>{emptyFormats.join(", ")}</strong> could not be generated from this material. Try regenerating, or upload a clearer source.</span></div>}<div className="sg-resultbody">{sortedSections.map((section, si) => <article className="sg-resultsection" key={`${section.type}-${si}`}><div className={`sg-sectionlabel ${(section.type === "short_answer" || section.type === "long_answer") ? "sg-sectionlabel-centered" : ""}`}><span>{String(si + 1).padStart(2, "0")} · {section.title}</span><span>{section.items.length} items</span></div>{section.items.map((item, ii) => {
   if (section.type === "mnemonics") return <MnemonicCard item={item} key={ii}/>;
   if (section.type === "mcq") return <McqCard item={item} index={ii} key={ii}/>;
   if (section.type === "quiz") return <QuizCard item={item} index={ii} key={ii}/>;
-  if (section.type === "notes" || section.type === "short_notes") {
+  if (section.type === "notes") {
     const r = item && typeof item === "object" ? item as ItemRecord : {};
     return <div className="sg-resultitem sg-note-card" key={ii}>
       <div><strong>{formatValue(r.heading)}</strong><p>{formatValue(r.content)}</p>
@@ -901,8 +1302,8 @@ function Home() {
   if (section.type === "flashcards") {
     const r = item && typeof item === "object" ? item as ItemRecord : {};
     return <div className="sg-resultitem sg-fc-item" key={ii}>
-      <div className="sg-fc-front"><strong>Q:</strong> {formatValue(r.front)}</div>
-      <div className="sg-fc-back"><strong>A:</strong> {formatValue(r.back)}</div>
+      <div className="sg-fc-front"><strong>Topic:</strong> {formatValue(r.front)}</div>
+      <div className="sg-fc-back"><strong>Key Point:</strong> {formatValue(r.back)}</div>
       {typeof r.sourceReference === "string" && r.sourceReference && <small className="sg-source-ref">📖 {r.sourceReference}</small>}
     </div>;
   }
@@ -948,7 +1349,7 @@ function Home() {
     </div>;
   }
   return <div className="sg-resultitem" key={ii}><b>{String(ii + 1).padStart(2, "0")}</b><pre>{prettyItem(item)}</pre></div>;
-}) : <p className="sg-emptysection">Some items could not be generated from this source. Valid items have been retained.</p>}</article>)}</div></>}
+})}</article>)}</div></>}
         </section>
       </div>
 
@@ -962,7 +1363,7 @@ function Home() {
         <section className="sg-card sg-card-pad sg-chat" id="ask">
           <div className="sg-cardhead"><div><h2><MessageCircle size={16} className="sg-teal"/> Ask your notes</h2><p>Ask anything about the uploaded material; answers are source-grounded.</p></div><span className="sg-step">AI tutor</span></div>
           <div className="sg-chatbody">{chatAnswer ? <><div className="sg-chatquestion">You asked: {chatQuestion}</div><div className="sg-chatbubble">{chatAnswer.answer}</div></> : <div className="sg-chatempty"><MessageCircle size={22}/><span>Upload notes, then ask a question.</span></div>}</div>
-          <form className="sg-chatform" onSubmit={askQuestion}><input value={chatQuestion} onChange={e => setChatQuestion(e.target.value)} placeholder={text ? "e.g. Explain this in simple words…" : "Upload material first…"} disabled={!text || Boolean(busyLabel)}/><button aria-label="Send question" disabled={!chatQuestion.trim() || !text || Boolean(busyLabel)}><Send size={14}/></button></form>
+          <form className="sg-chatform" onSubmit={askQuestion}><input value={chatQuestion} onChange={e => setChatQuestion(e.target.value)} placeholder={text ? "e.g. Explain this in simple words…" : "Upload material first…"} disabled={!text || Boolean(busyLabel)}/><button type="submit" aria-label="Send question" disabled={!chatQuestion.trim() || !text || Boolean(busyLabel)}><Send size={14}/></button></form>
         </section>
       </div>
 

@@ -533,11 +533,39 @@ export function detectQuestionBank(text: string): SourceQuestionBank {
     const isQuestion = questionPatterns.some((p) => p.test(line));
 
     if (isQuestion) {
+      // A numbered line only counts as a real question if it ends with "?"
+      // or starts with an interrogative word. This prevents story/narrative
+      // lines and textbook exercise numbering from being misread as a question
+      // bank (e.g. an English chapter with "1." exercise items).
+      const endsWithQ = line.includes("?");
+      const startsWithInterrogative = /^(?:who|what|when|where|why|how|which|did|do|does|did|was|were|is|are|can|could|should|would|will|describe|explain|give|mention|state|list|name)\b/i.test(
+        line.replace(questionPatterns[0], "").replace(questionPatterns[1], "").trim()
+      );
+
+      // MCQ option collection still allows option-style numbered items.
+      const optionLines: string[] = [];
+      let hasOptions = false;
+      let accepted = endsWithQ || startsWithInterrogative;
+
+      if (!accepted) {
+        // Look ahead: if the following lines look like MCQ options, treat it
+        // as a question anyway (question text often lacks "?").
+        let optCount = 0;
+        for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
+          const nl = lines[j].trim();
+          if (!nl) continue;
+          if (mcqOptionPattern.test(nl)) optCount++;
+          else break;
+        }
+        accepted = optCount >= 3;
+      }
+
+      if (!accepted) continue;
+
       questionCount++;
 
       // Check if the next few lines have MCQ options
-      const optionLines: string[] = [];
-      let hasOptions = false;
+      hasOptions = false;
       for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
         const nextLine = lines[j].trim();
         if (nextLine.length === 0) continue;
@@ -562,6 +590,8 @@ export function detectQuestionBank(text: string): SourceQuestionBank {
         } else if (!hasOptions && questionPatterns.some((p) => p.test(nextLine))) {
           break; // Next question started
         }
+        void endsWithQ;
+        void startsWithInterrogative;
       }
 
       if (hasOptions && optionLines.length >= 3) {
@@ -593,7 +623,11 @@ export function detectQuestionBank(text: string): SourceQuestionBank {
   const indicatorCount = bankIndicators.filter((ind) => lower.includes(ind)).length;
 
   // A document is a question bank if it has many questions or explicit indicators
-  const isQuestionBank = questionCount >= 3 || indicatorCount >= 2 || mcqCount >= 2;
+  // Require real evidence: several genuine questions AND supporting signals.
+  const isQuestionBank =
+    (questionCount >= 5 && indicatorCount >= 1) ||
+    mcqCount >= 3 ||
+    indicatorCount >= 2;
 
   return { isQuestionBank, mcqs, questions };
 }

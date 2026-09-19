@@ -185,7 +185,7 @@ function passesMcqQuality(item: Record<string, unknown>): boolean {
     if (typeof opt === "string" && containsMetadata(opt)) return false;
   }
 
-  // Reject if all options are identical (allow 2 same but need at least 3 unique)
+  // Reject if all options are identical (need at least 2 unique options)
   const uniqueOptions = new Set(options.map(o => typeof o === "string" ? o.toLowerCase().trim() : ""));
   if (uniqueOptions.size < 2) return false;
 
@@ -193,19 +193,21 @@ function passesMcqQuality(item: Record<string, unknown>): boolean {
   // Only reject if explanation is completely empty
 
   // Reject if correct answer doesn't appear in any option (mismatched answer)
+  // Only enforce this for substantive answers (more than 5 words)
   if (correctAnswer.length > 0 && options.length > 0) {
-    // Check 1: if correctAnswer is just a letter (A/B/C/D), that's fine — any answer can be selected
+    // Check 1: if correctAnswer is just a letter (A/B/C/D), that's fine
     const letterOnly = /^[A-Da-d]$/.test(correctAnswer.trim());
     if (!letterOnly) {
-      // Check 2: normalized text comparison
+      // Check 2: normalized text comparison — only enforce for long answers
       const normalizedCorrect = correctAnswer.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
       const correctWords = normalizedCorrect.split(/\s+/).filter(w => w.length > 3);
-      if (correctWords.length > 1) {
+      // Only enforce answer-in-options check when there are enough words to match
+      if (correctWords.length > 3) {
         const anyOptionContains = options.some(o => {
           if (typeof o !== "string") return false;
           const normalizedOpt = o.replace(/^[A-Da-d][).)\]:]\s*/, "").trim().toLowerCase();
           const matchCount = correctWords.filter(w => normalizedOpt.includes(w)).length;
-          return matchCount >= Math.ceil(correctWords.length * 0.5);
+          return matchCount >= Math.ceil(correctWords.length * 0.3);
         });
         if (!anyOptionContains) return false;
       }
@@ -236,13 +238,10 @@ function passesNotesQuality(item: Record<string, unknown>): boolean {
   // Reject if content is too short to be educational
   if (content.length < 20) return false;
 
-  // Reject if heading is empty or too generic
-  if (heading.length === 0) return false;
-
   // Reject metadata-contaminated headings
-  if (containsMetadata(heading)) return false;
+  if (heading.length > 0 && containsMetadata(heading)) return false;
 
-  // Reject if heading is just a sentence (not a topic label)
+  // If heading exists and is just a sentence (not a topic label), reject
   if (heading.length > 100 && /[.!?]$/.test(heading)) return false;
 
   return true;
@@ -392,9 +391,6 @@ function passesLongAnswerQuality(item: Record<string, unknown>): boolean {
   // Answer should be substantial
   if (answer.length < 30) return false;
 
-  // Should have key points
-  if (keyPoints.length < 2) return false;
-
   // Reject metadata-contaminated
   if (containsMetadata(question)) return false;
 
@@ -522,14 +518,21 @@ export function validateItems(
   if (!schema) return items;
 
   const validated: unknown[] = [];
+  let dropped = 0;
   for (const item of items) {
     const result = schema.safeParse(item);
     if (result.success) {
       validated.push(result.data);
+    } else {
+      dropped++;
+      if (dropped <= 3) {
+        console.warn(
+          `[STUDY] ${type}: dropped ${items.length - dropped + 1}/${items.length} malformed item(s). First issue: ${result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 200)}`,
+        );
+      }
     }
-    // Silently drop malformed items – the AI was asked to generate
-    // them, but they didn't match the required shape.
   }
+  if (dropped > 3) console.warn(`[STUDY] ${type}: dropped ${dropped}/${items.length} malformed item(s) total`);
   return validated;
 }
 
@@ -545,7 +548,7 @@ export function validateItems(
 export function passesSourceGrounding(
   item: Record<string, unknown>,
   sourceText: string,
-  minOverlap: number = 0.08,
+  minOverlap: number = 0.04,
 ): boolean {
   // Extract the "content" fields from the item
   const contentParts: string[] = [];
@@ -573,8 +576,11 @@ export function passesSourceGrounding(
   }
 
   // Short items (fewer than 8 significant words) get a more lenient check
-  // since they have fewer chances to overlap
-  const effectiveThreshold = itemWords.size < 8 ? Math.max(minOverlap * 0.5, 0.04) : minOverlap;
+  // since they have fewer chances to overlap. Items with 4-6 words
+  // only need ~2% overlap; items with 7-8 words need ~3%.
+  const effectiveThreshold = itemWords.size < 6 ? 0.02
+    : itemWords.size < 8 ? 0.03
+    : minOverlap;
 
   return overlap / itemWords.size >= effectiveThreshold;
 }

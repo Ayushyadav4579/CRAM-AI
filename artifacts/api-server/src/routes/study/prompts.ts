@@ -396,7 +396,9 @@ LANGUAGE: ${language}
 SOURCE MATERIAL:
 ${text}
 
-Return ONLY a valid JSON array of exactly ${count} MCQ objects.`;
+Return ONLY a valid JSON array of exactly ${count} MCQ objects.
+
+CRITICAL: You MUST return exactly ${count} MCQs. Never return an empty array. If the source has limited content, generate fewer but distinctive questions — but never zero. Every MCQ must have 4 options, exactly one correct answer, and a clear explanation.`;
 }
 
 export function buildShortAnswerPrompt(
@@ -614,28 +616,40 @@ OUTPUT SCHEMA (return a JSON array of objects):
   }
 ]
 
-FLASHCARD RULES — THE RULE OF ATOMICITY:
-1. Each flashcard must test EXACTLY ONE concept, fact, or relationship.
-   ✗ BAD: "Explain photosynthesis, its equation, factors, importance, and experiments."
-   ✓ GOOD: "Where does photosynthesis occur?" → "In the chloroplasts, specifically in the thylakoid membranes."
-   ✓ GOOD: "What is the chemical equation for photosynthesis?" → "6CO₂ + 6H₂O → C₆H₁₂O₆ + 6O₂"
+FLASHCARD RULES — HIGH-QUALITY ACTIVE RECALL:
 
-2. The front must be a SPECIFIC question, not a vague topic label.
-   ✗ BAD: "Photosynthesis"
-   ✓ GOOD: "What is the primary pigment in Photosystem II?"
-   ✓ GOOD: "Name the enzyme that fixes CO₂ in C4 plants."
+Each flashcard is a self-contained active-recall test. The student must be able to answer the FRONT without looking at any other card or the source.
 
-3. The back must be:
-   - Concise (1-3 sentences, ideally under 25 words)
-   - Complete enough to stand alone as an answer
-   - Precise and unambiguous
+1. FRONT (the prompt/question):
+   - Must be a SPECIFIC question that requires genuine recall — not a vague topic label
+   - Must target ONE specific fact, concept, relationship, definition, cause/effect, or exam-relevant detail
+   - Must be self-contained — the student can answer it from memory alone
+   - ✗ BAD: "Tell me about photosynthesis" / "Photosynthesis" / "What is the story about?"
+   - ✓ GOOD: "What two motivations drive Horace Danby's yearly robberies?"
+   - ✓ GOOD: "How does the young woman at Shotover Grange trick Horace?"
+   - ✓ GOOD: "What is the chemical equation for photosynthesis?"
+   - ✓ GOOD: "Name the enzyme that fixes CO₂ in C4 plants."
 
-4. Include specific terms, numbers, formulas, and relationships.
-5. NO compound cards — split into multiple cards if needed.
-6. Cards should be ordered from foundational to advanced.
-7. ${difficulty === "easy" ? "Focus on definitions, names, and basic facts." : ""}
-8. ${difficulty === "medium" ? "Focus on processes, comparisons, and applications." : ""}
-9. ${difficulty === "detailed" ? "Focus on multi-step reasoning, exceptions, and nuanced understanding." : ""}
+2. BACK (the answer/response):
+   - Must be precise and COMPLETE — give the full answer in 1-3 sentences
+   - Must directly answer the front question with specific details from the source
+   - Must include names, facts, numbers, dates, or formulas when relevant
+   - No preamble — start with the answer directly
+   - ✓ GOOD: "Horace steals to fund his rare book collection, studying targets for weeks."
+   - ✓ GOOD: "She pretends the jewels are hers, asks him to remove his gloves, then frames him."
+   - ✓ GOOD: "In the chloroplasts, specifically in the thylakoid membranes."
+
+3. COVERAGE:
+   - Cover ALL major concepts, characters, events, and themes from the source
+   - Mix question types: factual recall, inference, analysis, comparison, cause/effect
+   - Prioritize examinable content: character analysis, themes, key events, definitions, processes
+   - Do NOT create trivial or repetitive cards — every card must test a DIFFERENT concept
+   - Generate the requested number of flashcards, each one high-quality
+
+4. DIFFICULTY CALIBRATION:
+   ${difficulty === "easy" ? "Focus on definitions, names, and basic facts." : ""}
+   ${difficulty === "medium" ? "Focus on processes, comparisons, and applications." : ""}
+   ${difficulty === "detailed" ? "Focus on multi-step reasoning, exceptions, and nuanced understanding." : ""}
 
 ${metadataGuardrails()}
 ${antiHallucinationRules()}
@@ -670,22 +684,35 @@ OUTPUT SCHEMA (return a JSON array of objects, each representing one major branc
 
 MIND MAP GENERATION RULES:
 
+The mind map must show a GENUINE hierarchical understanding of the source — a visual study guide that reveals structure and relationships, not a flat list of paragraphs.
+
 1. BRANCH TITLES (the "branch" field):
-   - Must be a clear, recognizable topic or concept name.
-   - Typically 2-5 words, but can be longer if the concept requires it.
-   - Must NOT be random fragments extracted from the source.
-   ✗ BAD: "Studied two weeks", "Targeted fifteen thousand jewels"
-   ✓ GOOD: "Horace Danby's Background", "Character Profile", "Key Events", "Photosynthesis", "Chemical Reactions"
+   - Must be a meaningful concept, 3-8 words, not a fragment
+   - Must represent a distinct, important aspect of the source
+   - BAD: "Characters" (too generic). GOOD: "Horace Danby's Dual Life" (specific)
+   - BAD: "Events" (too generic). GOOD: "The Deception at Shotover Grange" (specific)
+   - BAD: "Science" (too generic). GOOD: "Photosynthesis: Light-Dependent Stage" (specific)
 
 2. CHILDREN (the "children" array):
-   - Each child must contain ONE COMPLETE MEANINGFUL idea — not a fragmented phrase.
-   - Target 3-15 words per child. Up to 18 words for an important complete fact.
-   - Must be specific, educational, and directly supported by the source.
-   - NEVER use "..." (ellipsis) to truncate content — rewrite into a concise complete phrase instead.
-   ✗ BAD: ["Studied two weeks", "Targeted jewels", "Served sentence"]
-   ✓ GOOD: ["Studied the house for two weeks before the robbery", "Planned to steal jewels worth £15,000", "Had previously served a fifteen-year prison sentence"]
-   ✗ BAD: ["Photosynthesis", "Plants", "Light", "Energy"]
-   ✓ GOOD: ["Occurs in chloroplasts of plant cells", "Requires sunlight, water, and CO₂", "Produces glucose and releases oxygen", "Converts light energy into chemical energy"]
+   - Each child must contain ONE COMPLETE MEANINGFUL idea — 4-18 words
+   - Must be specific, grounded in the source, and worth remembering
+   - Preserve names, dates, numbers, formulas, and key details
+   - Show relationships: cause/effect, trait/evidence, concept/example
+   - NEVER use "..." or truncated fragments or empty placeholders
+   - BAD: "Studied two weeks" (fragment). GOOD: "Studied the house for two weeks to learn family routines"
+   - BAD: "Planned jewels" (fragment). GOOD: "Planned to steal jewels worth £15,000 from Shotover Grange"
+   - BAD: ["Photosynthesis", "Plants", "Light"] (labels). GOOD: ["Occurs in chloroplasts of plant cells", "Requires sunlight, water, and CO₂"]
+
+3. SUBJECT ADAPTATION — adapt hierarchy to the subject:
+   Story/literature → characters, plot arc, conflict, theme, literary devices, key events, setting, irony
+   Science → definition, components, properties, process/mechanism, examples, applications
+   Mathematics → concept, definition, conditions, method/steps, formula, examples
+   History/social science → causes, key events, important people, effects, dates/locations
+
+4. RELATIONSHIPS:
+   - Where the source shows connections (cause→effect, compare/contrast), show them as parent→child
+   - Do NOT just convert paragraphs into bullet points — RESTRUCTURE into logical hierarchy
+   - Every child must be supported by the source; no invented content
 
 3. HIERARCHICAL STRUCTURE — adapt to the subject:
 

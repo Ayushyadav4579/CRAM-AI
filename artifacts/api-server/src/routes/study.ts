@@ -31,7 +31,7 @@ const router: IRouter = Router();
 const MAX_SOURCE_CHARS = 220_000;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_RETRIES = 2;
-const API_RETRIES = 2;
+const API_RETRIES = 3;
 const API_RETRY_BASE_MS = 2000;
 const RATE_LIMIT_MAX_RETRIES = 3;
 const DAILY_QUOTA_MAX_RETRIES = 0;
@@ -40,7 +40,7 @@ const DAILY_QUOTA_MAX_RETRIES = 0;
  * Start at 1 to avoid 429s on the free tier. Adaptive concurrency will
  * auto-scale up to this limit when requests succeed without rate-limiting.
  */
-const MAX_CONCURRENT_GENERATIONS = 2;
+const MAX_CONCURRENT_GENERATIONS = 3;
 /** Track recent 429 errors to adapt concurrency. */
 let recentRateLimits = 0;
 let lastRateLimitTime = 0;
@@ -225,6 +225,59 @@ function normalizeText(value: string): string {
     .trim();
 }
 
+/**
+ * Salvage a JSON array whose output was truncated (e.g. by the model's token
+ * limit). Walks backwards over complete top-level elements, closes the array,
+ * and returns every successfully generated item instead of losing them all.
+ */
+function salvageTruncatedArray(text: string): unknown[] | null {
+  const start = text.indexOf("[");
+  if (start === -1) return null;
+  const body = text.slice(start);
+
+  // Track string state and brace depth to find complete top-level elements.
+  let depth = 1; // body[0] is the opening "["
+  let inStr = false;
+  let esc = false;
+  const objectEnds: number[] = [];
+  let lastSafeQuoteEnd = -1;
+  for (let i = 1; i < body.length; i++) {
+    const ch = body[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') {
+      if (!inStr) lastSafeQuoteEnd = i;
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 1) objectEnds.push(i);
+    } else if (ch === "]") depth--;
+  }
+
+  // Objects first (largest = most items preserved)
+  for (let k = objectEnds.length - 1; k >= 0; k--) {
+    const attempt = `${body.slice(0, objectEnds[k] + 1)}]`;
+    try {
+      const parsed = JSON.parse(attempt);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch { /* keep going */ }
+  }
+
+  // Array of strings: cut after the last complete quoted element.
+  if (lastSafeQuoteEnd > 0) {
+    const attempt = `${body.slice(0, lastSafeQuoteEnd + 1)}]`;
+    try {
+      const parsed = JSON.parse(attempt);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch { /* give up */ }
+  }
+  return null;
+}
+
 function parseModelJson(raw: string): unknown {
   // Strip markdown fences and whitespace
   let cleaned = raw
@@ -249,6 +302,14 @@ function parseModelJson(raw: string): unknown {
     try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { /* fall through */ }
   }
 
+  // Salvage truncated arrays: a token-limit cut-off must never silently turn
+  // into an empty section — keep whatever complete items were produced.
+  const salvaged = salvageTruncatedArray(cleaned);
+  if (salvaged && salvaged.length > 0) {
+    console.warn(`[STUDY] Salvaged ${salvaged.length} item(s) from a truncated AI response`);
+    return salvaged;
+  }
+
   // Last resort: try to fix common JSON issues
   try {
     // Replace single quotes with double quotes (common AI mistake)
@@ -263,6 +324,28 @@ function parseModelJson(raw: string): unknown {
   } catch { /* give up */ }
 
   throw new Error("The AI returned an invalid response. Please try again.");
+}
+
+/**
+ * Remove metadata-like topics: page numbers, running headers, reprint/edition
+ * info, NCERT activity headings, TOC entries. Applied everywhere topics are
+ * returned to the client so "A Question of Trust 21 Reprint 2026-27" never
+ * becomes a topic.
+ */
+function filterMetadataTopics(rawTopics: unknown[]): string[] {
+  return rawTopics
+    .filter((topic): topic is string => typeof topic === "string")
+    .map((topic) => topic.trim())
+    .filter((topic) => {
+      const lower = topic.toLowerCase().trim();
+      if (lower.length < 3 || /^\d+$/.test(lower)) return false;
+      if (/^(?:read and find out|look and learn|do and learn|act and learn|try and learn|go and learn|think about it|talk about it|let us (?:do|review|practise|practice|understand)|activity|exercise|project|assignment|homework|class work|table of contents|index|preface|foreword|acknowledgement|syllabus)(?:\s+\d+)?$/.test(lower)) return false;
+      if (/reprint|edition|impression|isbn|copyright|all rights reserved|first published|printed (?:by|in|at)/.test(lower)) return false;
+      if (/\d{4}\s*[-–]\s*\d{2,4}/.test(lower)) return false; // year ranges like 2026-27
+      if (/^.{3,80}\s+\d{1,3}$/.test(topic.trim())) return false; // "Title 21" page-header pattern
+      return true;
+    })
+    .slice(0, 20);
 }
 
 function sourceForPrompt(text: string): string {
@@ -290,6 +373,98 @@ function buildSubjectSummary(knowledge: MathKnowledge): string {
   return parts.join(" · ");
 }
 
+/**
+ * Extract the items array from a model response regardless of the shape the
+ * model chose: a bare JSON array, an object with items/questions/data, a
+ * type-named key (notes, mcqs, flashcards, …), or a full pack with sections.
+ * A shape mismatch must never silently produce an empty section.
+ */
+const ITEM_CONTAINER_KEYS = [
+  "items", "questions", "data", "results", "result", "cards",
+  "notes", "mcqs", "quiz", "flashcards", "mnemonics", "definitions",
+  "formulas", "mindmap", "mind_map", "branches", "words",
+  "difficult_words", "short_answers", "list", "entries",
+] as const;
+
+function extractItemsForType(raw: unknown, type: string): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object") return [];
+  const record = raw as Record<string, unknown>;
+  const lower = type.toLowerCase();
+
+  // 1. Exact type-named key (e.g. { "mcqs": [...] })
+  for (const key of Object.keys(record)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z_]/g, "");
+    if ((normalizedKey === lower || normalizedKey === lower + "s" || lower.includes(normalizedKey)) && Array.isArray(record[key])) {
+      return record[key] as unknown[];
+    }
+  }
+
+  // 2. Known container keys
+  for (const key of ITEM_CONTAINER_KEYS) {
+    const val = record[key];
+    if (Array.isArray(val)) return val;
+  }
+
+  // 3. Full-pack style: { sections: [{ type, items }] }
+  if (Array.isArray(record.sections)) {
+    // First pass: exact type match
+    for (const s of record.sections) {
+      if (!s || typeof s !== "object") continue;
+      const sr = s as Record<string, unknown>;
+      const sType = typeof sr.type === "string" ? sr.type.toLowerCase() : "";
+      const sItems = Array.isArray(sr.items) ? sr.items
+        : Array.isArray(sr.questions) ? sr.questions
+        : Array.isArray(sr.data) ? sr.data
+        : null;
+      if (sItems && sType && (sType === lower || sType.includes(lower) || lower.includes(sType.split("_")[0]))) {
+        return sItems;
+      }
+    }
+    // Second pass: any section with items that has content
+    // Only as a last resort — log a warning so we know this happened
+    const sectionsWithItems = record.sections.filter(
+      (s: unknown) => s && typeof s === "object" && (
+        Array.isArray((s as Record<string, unknown>).items) && ((s as Record<string, unknown>).items as unknown[]).length > 0
+      )
+    );
+    if (sectionsWithItems.length === 1) {
+      // Only one section has items — it's probably ours
+      const s = sectionsWithItems[0] as Record<string, unknown>;
+      console.warn(`[STUDY] "${type}" falling back to single section with items (type=${s.type ?? "unknown"})`);
+      return (Array.isArray(s.items) ? s.items : []) as unknown[];
+    }
+    // Multiple sections have items — don't guess, return empty so retry triggers
+    if (sectionsWithItems.length > 1) {
+      console.warn(`[STUDY] "${type}" found ${sectionsWithItems.length} sections with items but none matched — types: ${sectionsWithItems.map((s: any) => s.type).join(", ")}`);
+    }
+  }
+
+  // 4. Top-level arrays: scan for arrays whose items look like this type
+  for (const key of Object.keys(record)) {
+    const val = record[key];
+    if (Array.isArray(val) && val.length > 0 && typeof val[0] === "object" && val[0] !== null) {
+      // Check if the items' keys match this type
+      const sampleKeys = Object.keys(val[0] as Record<string, unknown>).map(k => k.toLowerCase());
+      switch (lower) {
+        case "mcq": if (sampleKeys.includes("question") && sampleKeys.includes("options")) return val; break;
+        case "notes": if (sampleKeys.includes("heading") || sampleKeys.includes("content")) return val; break;
+        case "flashcards": if (sampleKeys.includes("front") || sampleKeys.includes("back")) return val; break;
+        case "short_answer": case "long_answer": if (sampleKeys.includes("question") && (sampleKeys.includes("answer") || sampleKeys.includes("keypoints"))) return val; break;
+        case "true_false": if (sampleKeys.includes("statement") || sampleKeys.includes("answer")) return val; break;
+        case "fill_blank": if (sampleKeys.includes("question") && sampleKeys.includes("answer")) return val; break;
+        case "definitions": if (sampleKeys.includes("term") || sampleKeys.includes("definition")) return val; break;
+        case "formulas": if (sampleKeys.includes("formula")) return val; break;
+        case "mnemonics": if (sampleKeys.includes("trick") || sampleKeys.includes("fact")) return val; break;
+        case "mindmap": if (sampleKeys.includes("branch")) return val; break;
+        case "difficult_words": if (sampleKeys.includes("word") || sampleKeys.includes("meaning")) return val; break;
+      }
+    }
+  }
+
+  return [];
+}
+
 // ── Concurrency limiter ───────────────────────────────────────────────────
 
 /**
@@ -315,11 +490,20 @@ async function parallelLimit<T>(
   async function worker() {
     while (nextIndex < tasks.length) {
       const i = nextIndex++;
-      // Stagger starts: worker N starts N * staggerMs after worker 0
+      // Stagger starts: cap stagger index at effectiveLimit to avoid
+      // multi-second delays when generating 6+ types
       if (i > 0 && staggerMs > 0) {
-        await sleep(staggerMs * i);
+        await sleep(staggerMs * Math.min(i, effectiveLimit));
       }
-      results[i] = await tasks[i]();
+      try {
+        results[i] = await tasks[i]();
+      } catch (err) {
+        // A single task failure must NOT crash the worker — that would
+        // silently lose every subsequent task assigned to this worker.
+        console.error(
+          `[STUDY] parallelLimit: task ${i} failed — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -357,18 +541,12 @@ async function generateWithType(
     try {
       const raw = parseModelJson(await generateWithRetry(model, prompt));
 
-      // Extract the items array from the response
-      let items: unknown[] = [];
-      if (Array.isArray(raw)) {
-        items = raw;
-      } else if (raw && typeof raw === "object") {
-        const record = raw as Record<string, unknown>;
-        if (Array.isArray(record.items)) {
-          items = record.items;
-        }
-        if (Array.isArray(record.questions)) {
-          items = record.questions;
-        }
+      // Extract the items array from the response (any plausible shape)
+      const items = extractItemsForType(raw, type);
+      if (!Array.isArray(raw) && items.length === 0) {
+        console.warn(
+          `[STUDY] "${type}" response was not a JSON array and no items were extractable — keys: ${raw && typeof raw === "object" ? Object.keys(raw as Record<string, unknown>).join(", ") : typeof raw}`,
+        );
       }
 
       // Validate, ground, and deduplicate
@@ -384,6 +562,23 @@ async function generateWithType(
 
       // If we have enough items or this was the last attempt, return what we have
       if (allValidItems.length >= count || attempt === MAX_RETRIES) {
+        if (allValidItems.length === 0 && attempt === MAX_RETRIES) {
+          // Last-ditch strict retry: prose/commentary/wrapper objects must never
+          // silently become an empty section. One focused regeneration with a
+          // hard output-format reminder.
+          const strictPrompt = `${prompt}\n\nCRITICAL OUTPUT FORMAT REMINDER:\n- Your previous response produced ZERO valid items because it did not follow the output format.\n- Return ONLY a valid JSON array of ${count} item objects exactly matching the OUTPUT SCHEMA above.\n- No markdown fences, no commentary, no wrapper object, no "sections" key — ONLY the array.\n- If the source truly cannot support any item, return [].`;
+          try {
+            const strictRaw = parseModelJson(await generateWithRetry(model, strictPrompt));
+            const strictItems = extractItemsForType(strictRaw, type);
+            allValidItems.push(...validateSection(type, strictItems, text));
+            if (allValidItems.length > 0) {
+              console.info(`[STUDY] "${type}" strict retry recovered ${allValidItems.length} item(s)`);
+            }
+          } catch (strictErr) {
+            if (strictErr instanceof QuotaExceededError) throw strictErr;
+            // fall through with whatever we have
+          }
+        }
         return { type, title, items: allValidItems.slice(0, count) };
       }
 
@@ -582,7 +777,7 @@ function demoItems(type: string, count: number, text: string, topic?: string | n
   const keyConcepts = knowledge?.concepts.length ? knowledge.concepts : sourceSentences;
   const chapterLabel = knowledge?.chapter || topic || "Source material";
 
-  if (type === "notes" || type === "short_notes") {
+  if (type === "notes") {
     const noteTopics = knowledge?.concepts.length
       ? knowledge.concepts
       : sourceSentences.length
@@ -1001,7 +1196,7 @@ ${sourceForPrompt(parsed.data.text)}`,
       raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).topics)
         ? ((raw as Record<string, unknown>).topics as unknown[])
         : [];
-    const topics = rawTopics.filter((topic: unknown): topic is string => typeof topic === "string").slice(0, 20);
+    const topics = filterMetadataTopics(rawTopics);
     res.json(DetectStudyTopicsResponse.parse({ topics }));
   } catch (error) {
     req.log.error({ error }, "Topic detection failed");
@@ -1046,15 +1241,67 @@ router.post("/study/generate", async (req, res): Promise<void> => {
           type, text, difficulty, language, topic ?? null, count, knowledge,
         );
       } catch (err) {
+        // Catch ALL errors — not just QuotaExceededError. An unhandled error
+        // here would crash the parallelLimit worker, silently losing every
+        // remaining task assigned to that worker.
+        const errMsg = err instanceof Error ? err.message : String(err);
         if (err instanceof QuotaExceededError) {
           console.warn(`[STUDY] Quota exhausted during "${type}" — returning empty section`);
-          return { type, title: typeLabels[type] ?? type, items: [] };
+        } else if (isRateLimitError(errMsg)) {
+          console.warn(`[STUDY] Rate limited during "${type}" — returning empty section for retry`);
+        } else if (isTransientServerError(errMsg)) {
+          console.warn(`[STUDY] Transient error during "${type}" — returning empty section for retry`);
+        } else {
+          console.error(`[STUDY] Generation failed for "${type}": ${errMsg.slice(0, 200)}`);
         }
-        throw err;
+        return { type, title: typeLabels[type] ?? type, items: [] };
       }
     });
 
-    const sections = await parallelLimit(tasks, MAX_CONCURRENT_GENERATIONS);
+    const sections = await parallelLimit(tasks, MAX_CONCURRENT_GENERATIONS, 1500);
+
+    // ── Per-section retry: if any section came back empty or was lost (undefined), retry it once ──
+    // Also handle sections that threw and left undefined entries in the results array.
+    const failedSections = sections.filter(
+      (s): s is NonNullable<typeof s> => s != null && s.items.length === 0 && types.includes(s.type),
+    );
+    // Replace any undefined entries with empty section placeholders so downstream code doesn't crash
+    for (let i = 0; i < sections.length; i++) {
+      if (sections[i] == null) {
+        const type = types[i] ?? "unknown";
+        sections[i] = { type, title: typeLabels[type] ?? type, items: [] };
+        failedSections.push(sections[i]!);
+      }
+    }
+    if (failedSections.length > 0) {
+      console.log(`[STUDY] ${failedSections.length} section(s) empty after initial generation: ${failedSections.map(s => s.type).join(", ")} — retrying`);
+      const retryResults = await Promise.allSettled(
+        failedSections.map(async (section) => {
+          try {
+            const retryResult = await generateWithType(
+              section.type, text, difficulty, language, topic ?? null, count, knowledge,
+            );
+            if (retryResult.items.length > 0) {
+              return { type: section.type, items: retryResult.items };
+            }
+          } catch (retryErr) {
+            if (retryErr instanceof QuotaExceededError) throw retryErr;
+            console.warn(`[STUDY] Retry for "${section.type}" failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+          }
+          return null;
+        })
+      );
+      for (const result of retryResults) {
+        if (result.status === 'fulfilled' && result.value) {
+          const section = sections.find(s => s && s.type === result.value!.type);
+          if (section) section.items = result.value.items;
+        }
+      }
+      const retryTotal = sections.reduce((sum, s) => sum + (s?.items.length ?? 0), 0);
+      if (retryTotal > 0) {
+        console.log(`[STUDY] Retry recovered items — new total: ${retryTotal}`);
+      }
+    }
 
     // ── Detect topics after generation (avoids extra concurrent Gemini call) ──
     let topics: string[] = [];
@@ -1071,9 +1318,7 @@ router.post("/study/generate", async (req, res): Promise<void> => {
       );
       const raw = parseModelJson(autoTopicsText);
       if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).topics)) {
-        topics = ((raw as Record<string, unknown>).topics as unknown[])
-          .filter((t): t is string => typeof t === "string")
-          .slice(0, 20);
+        topics = filterMetadataTopics((raw as Record<string, unknown>).topics as unknown[]);
       }
     } catch {
       // If topic generation fails, continue without topics
@@ -1090,6 +1335,16 @@ router.post("/study/generate", async (req, res): Promise<void> => {
       summaryParts.push(`Complete study pack with ${totalItems} source-grounded items across ${types.length} formats.`);
     }
     const summary = summaryParts.join(" — ");
+
+    // If EVERY requested section came back empty, fail loudly instead of
+    // returning a silent empty pack the user has to stare at.
+    if (totalItems === 0 && sections.length > 0) {
+      res.status(503).json({
+        error: "Generation returned no usable content for any requested section. This usually means the AI response was truncated or blocked. Please try again — reducing the number of formats or the source length often helps.",
+        emptyPack: true,
+      });
+      return;
+    }
 
     const subjectLabel = knowledge.subject !== "general" && knowledge.chapter
       ? `${knowledge.chapter} — ${knowledge.subject.charAt(0).toUpperCase() + knowledge.subject.slice(1)}`
@@ -1202,6 +1457,23 @@ router.post("/study/generate-stream", async (req, res): Promise<void> => {
     });
 
     const sections = await parallelLimit(tasks, MAX_CONCURRENT_GENERATIONS);
+
+    // ── Per-section retry for empty sections (streaming) ──
+    const emptyRetryTypes = sections.filter(s => s.items.length === 0 && types.includes(s.type));
+    if (emptyRetryTypes.length > 0) {
+      sendEvent("progress", { phase: "retrying", message: `Retrying ${emptyRetryTypes.length} empty section(s)...` });
+      for (const section of emptyRetryTypes) {
+        try {
+          const retryResult = await generateWithType(section.type, text, difficulty, language, topic ?? null, count, knowledge);
+          if (retryResult.items.length > 0) {
+            section.items = retryResult.items;
+            sendEvent("section_complete", { type: section.type, title: section.title, itemCount: section.items.length, retried: true });
+          }
+        } catch {
+          // Quota errors already handled
+        }
+      }
+    }
     // ── Detect topics after generation (avoids extra concurrent Gemini call) ──
     let topics: string[] = [];
     try {
@@ -1237,11 +1509,31 @@ router.post("/study/generate-stream", async (req, res): Promise<void> => {
     }
     const summary = summaryParts.join(" — ");
 
+    // If EVERY requested section came back empty, fail loudly instead of
+    // returning a silent empty pack the user has to stare at.
+    if (totalItems === 0 && sections.length > 0) {
+      res.status(503).json({
+        error: "Generation returned no usable content for any requested section. This usually means the AI response was truncated or blocked. Please try again — reducing the number of formats or the source length often helps.",
+        emptyPack: true,
+      });
+      return;
+    }
+
     const subjectLabel = knowledge.subject !== "general" && knowledge.chapter
       ? `${knowledge.chapter} — ${knowledge.subject.charAt(0).toUpperCase() + knowledge.subject.slice(1)}`
       : topic
         ? `Study Pack: ${topic}`
         : "CRAM AI Study Pack";
+
+    // Streaming route: emit an explicit error event for an all-empty pack.
+    if (totalItems === 0 && sections.length > 0) {
+      sendEvent("error", {
+        error: "Generation returned no usable content for any requested section. This usually means the AI response was truncated or blocked. Please try again.",
+        emptyPack: true,
+      });
+      res.end();
+      return;
+    }
 
     // Send final complete pack
     sendEvent("complete", {

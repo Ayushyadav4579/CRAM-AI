@@ -62,14 +62,14 @@ const AskStudyDocumentResponse = z.object({
 const APP_NAME = "CRAM AI";
 const MAX_SOURCE_CHARS = 220_000;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_TYPES = 8;
+const MAX_TYPES = 12;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 25;
 const requestCounts = new Map<string, { count: number; resetAt: number }>();
 
 const typeLabels: Record<string, string> = {
   notes: "Detailed Notes",
-  short_notes: "Quick Revision Notes",
+  // short_notes removed — Detailed Notes covers this
   mcq: "MCQs",
   short_answer: "Short Answer Questions",
   long_answer: "Long Answer Questions",
@@ -237,47 +237,71 @@ function insertWordBoundaries(text: string): string {
 }
 
 /**
- * Remove document metadata that should not be used for study material generation.
+ * Structural document noise detector.
+ * Classifies lines as metadata vs educational content using structural signals,
+ * not specific keywords — works for ANY subject, textbook, or document type.
  */
 function removeDocumentMetadata(text: string): string {
   const lines = text.split("\n");
   const cleaned: string[] = [];
   let consecutiveMetadataRemoved = 0;
 
-  const metadataPatterns = [
+  // ── Phase 1: count line occurrences (headers/footers repeat on every page) ──
+  const lineCounts = new Map<string, number>();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0 && trimmed.length < 120) {
+      lineCounts.set(trimmed, (lineCounts.get(trimmed) || 0) + 1);
+    }
+  }
+
+  // ── Phase 2: detect structural metadata patterns ──
+  const structuralMetadata = [
+    // Page numbering
     /^\s*(?:page|p\.?|pp\.?)\s*\d+\s*(?:of\s*\d+)?\s*$/i,
     /^\s*\d+\s*\/\s*\d+\s*$/,
     /^\s*-\s*\d+\s*-$/,
+    /^\s*\d+\s*(?:GSM|pp)\s+paper.*$/i,
+    /^\s*\d{1,5}\s*$/,  // Standalone page numbers
+    // Publication metadata
     /^\s*(?:©|copyright)\s*\d{4}.*$/i,
     /^\s*all\s+rights?\s+reserved.*$/i,
     /^\s*isbn[\s:]*[\d\-]+.*$/i,
     /^\s*(?:published|printed|printed\s+on)\s+by\b.*$/i,
     /^\s*(?:published|printed)\s+(?:in|at)\b.*$/i,
-    /^\s*\d+\s*(?:GSM|pp)\s+paper.*$/i,
     /^\s*(?:prepared?\s+by|author|editor|written?\s+by|compiled?\s+by|revised?\s+by)\s*[:\-–—]?\s*.*$/i,
+    /^\s*(?:mrp|price|rs\.?|inr|usd|\$)\s*[:.]?\s*\d+.*$/i,
+    /^\s*(?:First\s+Published|Second\s+Published|Published\s+\d{4}|Printed\s+at|Printed\s+by|Copies|Pages|Binding|Size|Edition|Vol\.?|Volume|revised\s+edition|new\s+edition|first\s+edition).*$/i,
+    /^\s*(?:Reprint|Reprinted?)\s+(?:\d{4}[-–]\d{2,4}|\d{4}).*$/i,
+    /^\s*(?:First|Second|Third|Fourth|Fifth|\d+(?:st|nd|rd|th))\s+(?:Reprint|Edition|Impression).*$/i,
+    // Navigation / structural headings
+    /^\s*(?:table\s+of\s+contents|index|preface|foreword|acknowledgement|acknowledgment).*$/i,
+    /^\s*(?:Contents|Contents\s+Page|Syllabus)\s*$/i,
+    /^\s*\d+\s*\.\s+[A-Z].{3,60}\s*\.\.\.+\s*\d+\s*$/i,
+    /^\s*(?:next|previous|back|continue|click\s+here).*$/i,
+    /^\s*(?:disclaimer|terms?\s+of|privacy\s+policy|legal\s+notice).*$/i,
+    /^\s*(?:generated\s+by|created\s+by|last\s+modified|date\s+(?:created|modified|printed)).*$/i,
+    /^\s*(?:scan|scan\s+the|qr\s*code).*$/i,
     /^\s*[A-Z][a-z]+_[A-Z][a-z]+\.(?:pdf|docx|txt)\s*$/i,
     /^\s*https?:\/\/\S+\s*$/,
-    /^\s*(?:scan|scan\s+the|qr\s*code).*$/i,
-    /^\s*(?:edition|vol\.?|volume|revised\s+edition|new\s+edition|first\s+edition).*$/i,
-    /^\s*(?:disclaimer|terms?\s+of|privacy\s+policy|legal\s+notice).*$/i,
-    /^\s*(?:mrp|price|rs\.?|inr|usd|\$)\s*[:.]?\s*\d+.*$/i,
-    /^\s*(?:table\s+of\s+contents|index|preface|foreword|acknowledgement|acknowledgment).*$/i,
-    /^\s*(?:next|previous|back|continue|click\s+here).*$/i,
-    /^\s*(?:generated\s+by|created\s+by|last\s+modified|date\s+(?:created|modified|printed)).*$/i,
+    // NCERT / textbook activity headings (structural, not content)
+    /^\s*READ\s+AND\s+FIND\s+OUT\s*(?:\d+)?\s*$/i,
+    /^\s*LOOK\s+AND\S*\s+LEARN\s*(?:\d+)?\s*$/i,
+    /^\s*DO\s+AND\S*\s+LEARN\s*(?:\d+)?\s*$/i,
+    /^\s*ACT\s+AND\S*\s+LEARN\s*(?:\d+)?\s*$/i,
+    /^\s*TRY\s+AND\S*\s+LEARN\s*(?:\d+)?\s*$/i,
+    /^\s*GO\s+AND\S*\s+LEARN\s*(?:\d+)?\s*$/i,
+    /^\s*LET\s+US\s+(?:DO|REVIEW|PRACTICE|UNDERSTAND|LEARN)\b.*$/i,
+    /^\s*THINK\s+ABOUT\s+IT\s*(?:\d+)?\s*$/i,
+    /^\s*TALK\s+ABOUT\s+IT\s*(?:\d+)?\s*$/i,
+    /^\s*(?:EXERCISE|PRACTICE|ASSIGNMENT|WORKSHEET|HOMEWORK|CLASS\s+WORK|ACTIVITY)[S]?\s*$/i,
+    /^\s*(?:PROJECT|MODEL|LAB|VIVA)[S]?\s+(?:WORK|QUESTION|ANSWER).*$/i,
   ];
 
-  // Count occurrences of each non-empty line
-  const lineCounts = new Map<string, number>();
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.length > 0 && trimmed.length < 100) {
-      lineCounts.set(trimmed, (lineCounts.get(trimmed) || 0) + 1);
-    }
-  }
-
   for (const line of lines) {
     const trimmed = line.trim();
 
+    // Preserve blank lines (single blank between content)
     if (!trimmed) {
       if (cleaned.length > 0 && cleaned[cleaned.length - 1] !== "") {
         cleaned.push("");
@@ -288,29 +312,44 @@ function removeDocumentMetadata(text: string): string {
 
     let isMetadata = false;
 
-    for (const pattern of metadataPatterns) {
-      if (pattern.test(trimmed)) {
-        isMetadata = true;
-        break;
+    // Check structural patterns
+    for (const pattern of structuralMetadata) {
+      if (typeof pattern === "function" || (pattern && typeof pattern === "object" && typeof pattern.test === "function")) {
+        // Filter out the buggy .test && entry
+        if (typeof pattern === "object" && "test" in pattern && typeof pattern.test === "function") {
+          if (pattern.test(trimmed)) { isMetadata = true; break; }
+        }
       }
     }
 
-    // Check for repeated lines (headers/footers appearing on every page)
+    // Lines repeated >3 times and short = likely header/footer
     if (!isMetadata && (lineCounts.get(trimmed) || 0) > 3 && trimmed.length < 80) {
       isMetadata = true;
     }
 
-    // Don't remove numbered items (likely content)
+    // Textbook chapter name + trailing page number (e.g. "A Question of Trust 21")
+    if (!isMetadata && trimmed.length < 80 && /^\s*[A-Z].*?\s+\d{1,3}\s*$/.test(trimmed)) {
+      const trailingNum = trimmed.match(/\s+(\d{1,4})\s*$/);
+      if (trailingNum && trailingNum[1].length <= 4) {
+        const textPart = trimmed.slice(0, trimmed.length - trailingNum[1].length).trim();
+        if (textPart.length < 60 || /^\s*(?:Unit|Chapter|Lesson|Section|Part|Module|Topic)\b/i.test(textPart)) {
+          isMetadata = true;
+        }
+      }
+    }
+
+    // Don't remove numbered list items (likely content)
     if (isMetadata && /^\s*\d+[\.\)]\s/.test(trimmed)) {
       isMetadata = false;
     }
-    // Don't remove equations
+    // Don't remove equations / formulas
     if (isMetadata && /[=+\-*/^<>]{2,}/.test(trimmed)) {
       isMetadata = false;
     }
 
     if (isMetadata) {
       consecutiveMetadataRemoved++;
+      // Safety: don't remove >5 consecutive lines (probably real content)
       if (consecutiveMetadataRemoved > 5) {
         isMetadata = false;
         consecutiveMetadataRemoved = 0;
@@ -386,10 +425,40 @@ interface SubjectInfo {
 }
 
 async function detectSubject(text: string): Promise<SubjectInfo> {
-  const sample = text.slice(0, 15_000);
+  // Skip leading metadata and use deeper content sample
+  // Find where actual content starts (after any metadata headers)
+  let sampleStart = 0;
+  const lines = text.split('\n');
+  for (let i = 0; i < Math.min(lines.length, 60); i++) {
+    const line = lines[i].trim();
+    // Skip lines that look like metadata, page numbers, or section headers
+    if (
+      line.length < 5 ||
+      /^\d+$/.test(line) ||
+      /^(?:read and find out|look and learn|do and learn|activity|exercise|page|©|copyright)/i.test(line) ||
+      /reprint|edition|impression|\d{4}[-–]\d{2,4}/i.test(line) ||
+      /^\s*(?:unit|chapter|lesson|section|part|module|topic)\s*\d+\s*$/i.test(line) ||
+      /^(?:isbn|published by|printed by|all rights reserved|price|mrp)/i.test(line) ||
+      /^(?:think about it|talk about it|go and learn|let us)/i.test(line) ||
+      /^\s*[A-Z].*?\s+\d{1,3}\s*$/.test(line) && line.length < 80
+    ) {
+      sampleStart += line.length + 1;
+      continue;
+    }
+    // If we find a substantial line, stop skipping
+    if (line.length > 30) break;
+  }
+  // Use up to 30,000 chars starting from where real content begins
+  const sample = text.slice(sampleStart, sampleStart + 30_000);
 
   const result = await generateContent(
     `You are an expert academic content classifier for ${APP_NAME}. Analyze the following study material and detect its subject, grade level, chapter, and characteristics.
+
+CRITICAL RULES:
+- The uploaded text may contain page numbers, chapter numbers, reprint dates, section headers like 'READ AND FIND OUT', 'THINK ABOUT IT', and other textbook metadata. IGNORE these when determining the subject and chapter.
+- Focus ONLY on the actual educational content: the paragraphs, explanations, questions, stories, definitions, and concepts.
+- For English literature: detect the chapter title, book name, author if present, and themes.
+- For Science/Math: detect the actual subject, topic, and key concepts.
 
 Respond with VALID JSON ONLY. No commentary, no markdown fences.
 
@@ -398,7 +467,9 @@ Required JSON shape:
   "subject": "one of: Mathematics, Physics, Chemistry, Biology, History, Geography, Civics, Political Science, Economics, English, Hindi, Computer Science, Information Technology, General",
   "confidence": 0.0-1.0,
   "gradeLevel": "e.g. Grade 10, Class 12, UG Year 1, or empty string if unknown",
-  "chapter": "detected chapter/topic name, or empty string",
+  "chapter": "detected chapter title from actual content, NOT a page header",
+  "book": "detected book title if present, or empty string",
+  "author": "detected author if present, or empty string",
   "topics": ["topic1", "topic2"],
   "domain": "academic|vocational|professional|general",
   "contentType": "textbook|question_bank|notes|article|mixed",
@@ -411,7 +482,9 @@ IMPORTANT RULES:
 3. If the content is primarily equations, formulas, numerical problems, and mathematical reasoning, classify as Mathematics.
 4. If the content mixes subjects, pick the dominant one.
 5. For grade level, look for clues like NCERT references, CBSE patterns, syllabus indicators, topic complexity.
-6. For chapter, extract the actual chapter title if visible in the text.
+6. For chapter, extract the actual chapter title if visible in the body text, NOT from page headers/footers.
+7. Ignore section headers like 'READ AND FIND OUT', 'THINK ABOUT IT', 'TALK ABOUT IT' — these are NCERT activity headings, not chapter titles.
+8. The chapter title should describe the actual content/topic being studied.
 
 COMPLETE STUDY MATERIAL:
 ${sourceForPrompt(sample)}`
@@ -508,13 +581,61 @@ function getClient() {
   return new GoogleGenAI({ apiKey: key });
 }
 
+function isTransientAiError(err: unknown): boolean {
+  const message =
+    err instanceof Error
+      ? `${err.message} ${err.name}`
+      : typeof err === "string"
+        ? err
+        : JSON.stringify(err ?? "");
+  // Daily quota exhaustion will NOT recover by waiting seconds — fail fast
+  // with a clear error instead of retrying and holding the connection open
+  // (which causes the client to see "failed to fetch").
+  if (/GenerateRequestsPerDay|quotaValue|PerProjectPerModel-FreeTier/i.test(message)) {
+    throw new Error(
+      "Gemini API daily free-tier quota exhausted (20 requests/day for this model). Wait until tomorrow, upgrade your Gemini plan, or add a different API key."
+    );
+  }
+  return (
+    /\b503\b|\b429\b|\b500\b|\b499\b/i.test(message) ||
+    /overload|high demand|unavailable|rate.?limit|resource.?exhaust|timeout|temporarily/i.test(
+      message
+    )
+  );
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function generateContent(contents: string | unknown[]) {
   const client = getClient();
   if (!client) return null;
-  return client.models.generateContent({
-    model: MODEL_NAME,
-    contents: contents as any,
-  });
+  // Retry transient provider errors (503 overloaded / 429 rate limit) with
+  // exponential backoff so demand spikes don't fail the user's request.
+  const maxAttempts = 5;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await client.models.generateContent({
+        model: MODEL_NAME,
+        contents: contents as any,
+        config: {
+          maxOutputTokens: 65536,
+        },
+      });
+    } catch (err) {
+      lastError = err;
+      if (attempt === maxAttempts || !isTransientAiError(err)) throw err;
+      const delayMs = Math.min(1_000 * 2 ** (attempt - 1), 12_000);
+      console.warn(
+        `Gemini call failed (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms:`,
+        err instanceof Error ? err.message : err
+      );
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
 }
 
 function normalizeText(value: string) {
@@ -547,28 +668,73 @@ function parseModelJson(raw: string): any {
   try {
     return JSON.parse(cleaned);
   } catch {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start < 0 || end <= start) {
-      const arrStart = cleaned.indexOf("[");
-      const arrEnd = cleaned.lastIndexOf("]");
-      if (arrStart >= 0 && arrEnd > arrStart) {
-        try {
-          return JSON.parse(cleaned.slice(arrStart, arrEnd + 1));
-        } catch {
-          // fall through
-        }
-      }
-      throw new Error(
-        "The AI returned an invalid structured response. Please try again."
-      );
-    }
+    // fall through to salvage
+  }
+
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  const arrStart = cleaned.indexOf("[");
+  const arrEnd = cleaned.lastIndexOf("]");
+
+  if (start >= 0 && end > start) {
     try {
       return JSON.parse(cleaned.slice(start, end + 1));
     } catch {
-      throw new Error("The AI returned invalid JSON. Please try again.");
+      // fall through to truncated-object salvage
     }
   }
+  if (arrStart >= 0 && arrEnd > arrStart) {
+    try {
+      return JSON.parse(cleaned.slice(arrStart, arrEnd + 1));
+    } catch {
+      // fall through
+    }
+  }
+
+  // Salvage a truncated JSON array (token-limit cut mid-item): close any
+  // open object, drop the trailing partial item, and close the array.
+  if (arrStart >= 0 && arrEnd < 0) {
+    let partial = cleaned.slice(arrStart);
+    // Remove trailing incomplete item: cut back to the last complete object
+    const lastBrace = partial.lastIndexOf("}");
+    if (lastBrace > 0) partial = partial.slice(0, lastBrace + 1) + "]";
+    else partial = "[]";
+    try {
+      return JSON.parse(partial);
+    } catch {
+      // fall through
+    }
+  }
+
+  // Salvage a truncated JSON object with an open "items" array similarly.
+  if (start >= 0 && end < 0) {
+    let partial = cleaned.slice(start);
+    const lastBrace = partial.lastIndexOf("}");
+    if (lastBrace > 0) partial = partial.slice(0, lastBrace + 1);
+    // Close all unbalanced braces/brackets
+    let braces = 0, brackets = 0, inStr = false, esc = false;
+    for (const ch of partial) {
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') inStr = !inStr;
+      if (inStr) continue;
+      if (ch === "{") braces++;
+      if (ch === "}") braces--;
+      if (ch === "[") brackets++;
+      if (ch === "]") brackets--;
+    }
+    if (inStr) partial += '"';
+    partial += "]".repeat(Math.max(0, brackets)) + "}".repeat(Math.max(0, braces));
+    try {
+      return JSON.parse(partial);
+    } catch {
+      // fall through
+    }
+  }
+
+  throw new Error(
+    "The AI returned an invalid structured response. Please try again."
+  );
 }
 
 function dedupeItems(items: unknown[]) {
@@ -579,7 +745,7 @@ function dedupeItems(items: unknown[]) {
         ? (item as Record<string, unknown>)
         : {};
     const key = String(
-      r.question ?? r.front ?? r.fact ?? r.term ?? r.statement ?? item
+      r.question ?? r.front ?? r.fact ?? r.term ?? r.statement ?? r.word ?? r.branch ?? r.heading ?? r.formula ?? item
     )
       .toLowerCase()
       .replace(/\s+/g, " ")
@@ -596,26 +762,101 @@ function normalizePack(value: unknown, requestedTypes: string[]) {
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
       : {};
+
+  // Collect all sections from the response (may come as sections array or top-level arrays)
+  const responseSections: { type: string; title: string; items: unknown[] }[] = [];
+  if (Array.isArray(raw.sections)) {
+    for (const s of raw.sections) {
+      if (typeof s === "object" && s && typeof (s as any).type === "string") {
+        const rawItems = extractItemsFromSection(s as any);
+        responseSections.push({
+          type: (s as any).type,
+          title: typeof (s as any).title === "string" ? (s as any).title : typeLabels[(s as any).type] ?? (s as any).type,
+          items: dedupeItems(rawItems),
+        });
+      }
+    }
+  }
+
+  // Also scan top-level arrays — the AI may return flat arrays keyed by type name
+  // or as unnamed arrays next to the sections.
+  const TOP_LEVEL_KEYS = [
+    "items", "questions", "data", "results", "entries", "content",
+  ];
+  for (const key of Object.keys(raw)) {
+    if (TOP_LEVEL_KEYS.includes(key) && Array.isArray(raw[key])) {
+      // Try to infer type from the key
+      const inferredType = key === "questions" ? "short_answer"
+        : key === "items" ? null  // ambiguous
+        : key;
+      if (inferredType) {
+        const existing = responseSections.find(s => s.type === inferredType);
+        if (!existing || existing.items.length === 0) {
+          const items = dedupeItems(raw[key] as unknown[]);
+          if (items.length > 0) {
+            if (existing) existing.items = items;
+            else responseSections.push({ type: inferredType, title: typeLabels[inferredType] ?? inferredType, items });
+          }
+        }
+      }
+    }
+  }
+
+  // Fuzzy type matching: try exact match first, then case-insensitive, then substring
+  function findSection(type: string) {
+    // Exact match
+    let found = responseSections.find(s => s.type === type);
+    if (found) return found;
+    // Case-insensitive
+    const lower = type.toLowerCase();
+    found = responseSections.find(s => s.type.toLowerCase() === lower);
+    if (found) return found;
+    // Substring match (e.g. "notes" matches "detailed_notes", "mcqs" matches "mcq")
+    found = responseSections.find(s => s.type.toLowerCase().includes(lower) || lower.includes(s.type.toLowerCase()));
+    if (found) return found;
+    // Title-based match: AI might set title to "MCQs" but type to something else
+    const titleAliases: Record<string, string[]> = {
+      mcq: ["mcq", "mcqs", "multiple choice", "multiple-choice", "quiz questions"],
+      true_false: ["true", "false", "true/false", "true or false", "tf"],
+      fill_blank: ["fill", "blank", "fill-in", "fill in the blank"],
+      notes: ["note", "notes", "detailed", "summary"],
+      flashcards: ["flashcard", "flash card"],
+      mindmap: ["mind map", "mindmap", "concept map"],
+      short_answer: ["short answer", "short"],
+      long_answer: ["long answer", "long"],
+      definitions: ["definition", "definitions"],
+      formulas: ["formula", "formulas"],
+      difficult_words: ["difficult word", "vocabulary"],
+      mnemonics: ["mnemonic", "memory trick"],
+    };
+    const aliases = titleAliases[type] || [];
+    found = responseSections.find(s => {
+      const titleLower = (s.title || "").toLowerCase();
+      const typeLower = s.type.toLowerCase();
+      return aliases.some(a => titleLower.includes(a) || typeLower.includes(a));
+    });
+    if (found) return found;
+    // Check if any section has items and its type is close
+    found = responseSections.find(s => s.items.length > 0 && type.includes(s.type.split('_')[0]));
+    if (found) return found;
+    // Last resort: check if the AI returned a flat array of objects that
+    // look like they belong to this type.
+    found = responseSections.find(s => s.items.length > 0 && looksLikeType(s.items, type));
+    if (found) return found;
+    console.log(`[CRAM] findSection("${type}"): no match among ${responseSections.length} sections: [${responseSections.map(s => s.type).join(", ")}]`);
+    return null;
+  }
+
   const sections = requestedTypes.map((type) => {
-    const match = Array.isArray(raw.sections)
-      ? raw.sections.find(
-          (s) =>
-            typeof s === "object" && s && (s as any).type === type
-        )
-      : null;
-    const r =
-      match && typeof match === "object" ? (match as any) : {};
+    const match = findSection(type);
     return {
       type,
       title:
-        typeof r.title === "string"
-          ? r.title
-          : typeLabels[type] ?? type,
-      items: dedupeItems(
-        Array.isArray(r.items) ? r.items : []
-      ),
+        match?.title || (typeLabels[type] ?? type),
+      items: match ? match.items : [],
     };
   });
+
   return GenerateStudyPackResponse.parse({
     title:
       typeof raw.title === "string"
@@ -628,10 +869,82 @@ function normalizePack(value: unknown, requestedTypes: string[]) {
     topics: Array.isArray(raw.topics)
       ? raw.topics
           .filter((x): x is string => typeof x === "string")
+          .filter(isRealTopic)
           .slice(0, 30)
       : [],
     sections,
   });
+}
+
+/**
+ * Extract items from an AI response section object, checking multiple possible
+ * keys the model might use.
+ */
+function extractItemsFromSection(section: Record<string, unknown>): unknown[] {
+  const ITEM_KEYS = ["items", "questions", "data", "entries", "content", "results"];
+  for (const key of ITEM_KEYS) {
+    if (Array.isArray(section[key])) return section[key];
+  }
+  return [];
+}
+
+/**
+ * Last-resort heuristic: check if an array of objects looks like they belong
+ * to a particular type based on their key structure.
+ */
+function looksLikeType(items: unknown[], type: string): boolean {
+  if (!items.length) return false;
+  const sample = items[0];
+  if (!sample || typeof sample !== "object") return false;
+  const keys = Object.keys(sample as Record<string, unknown>).map(k => k.toLowerCase());
+  switch (type) {
+    case "mcq": return keys.includes("question") && keys.includes("options");
+    case "notes": return keys.includes("heading") || keys.includes("content");
+    case "flashcards": return keys.includes("front") || keys.includes("back");
+    case "true_false": return keys.includes("statement") || keys.includes("answer");
+    case "fill_blank": return keys.includes("question") && keys.includes("answer");
+    case "definitions": return keys.includes("term") || keys.includes("definition");
+    case "formulas": return keys.includes("formula");
+    case "mnemonics": return keys.includes("trick") || keys.includes("fact");
+    case "mindmap": return keys.includes("branch");
+    case "difficult_words": return keys.includes("word") || keys.includes("meaning");
+    case "short_answer": case "long_answer": return keys.includes("question") && keys.includes("answer");
+    default: return false;
+  }
+}
+
+/**
+ * Filter out textbook metadata that should never appear as a topic:
+ * page numbers, running headers/footers, instructional headings,
+ * reprint/edition strings, ISBN/pricing, etc. Shared by /study/topics,
+ * /study/generate and /study/generate-stream.
+ */
+export function isRealTopic(topic: string): boolean {
+  const t = topic.trim();
+  if (t.length < 3) return false;
+  // Purely numeric or page-like
+  if (/^\d+$/.test(t)) return false;
+  if (/^\d{1,4}$/.test(t.replace(/\s+/g, ""))) return false;
+  // Common instructional headings
+  const forbidden = [
+    "read and find out", "think about it", "talk about it",
+    "table of contents", "contents", "index", "acknowledgements",
+    "isbn", "reprint", "edition", "published by", "copyright",
+    "price", "rupees", "printed in", "page no", "page number",
+  ];
+  const lower = t.toLowerCase();
+  if (forbidden.some((f) => lower === f || lower.includes(f))) return false;
+  // Chapter title followed by page number, e.g. "A Question of Trust 21"
+  const stripped = t.replace(/\s+\d{1,4}$/, "");
+  if (stripped !== t && stripped.length >= 3 && forbidden.some((f) => stripped.toLowerCase().includes(f))) {
+    return false;
+  }
+  // Reprint / session year ranges like "Reprint 2026-27"
+  if (/\b(19|20)\d{2}\s*[-–]\s*(\d{2}|(19|20)\d{2})\b/.test(t) && t.length < 60) return false;
+  // Mostly metadata: >50% digits/punctuation
+  const alnum = t.replace(/[^\p{L}\p{N}]/gu, "").length;
+  if (alnum / t.length < 0.4) return false;
+  return true;
 }
 
 // ── Output Validation ────────────────────────────────────────────────────────
@@ -652,15 +965,22 @@ function validateAndCleanItems(items: unknown[], type: string): unknown[] {
 
       // Remove items that are clearly metadata
       const text = JSON.stringify(r).toLowerCase();
+      // NOTE: only patterns that indicate DOCUMENT metadata, not legitimate
+      // study content. Words like "copyright", "published by" or "exercise"
+      // can absolutely appear inside a real lesson (e.g. IP-law civics
+      // chapters, "this book was published by...", exercise questions), so
+      // they must NOT reject an entire item.
       const metadataPatterns = [
-        /isbn/,
-        /copyright/,
-        /all rights reserved/,
-        /published by/,
-        /printed by/,
-        /prepared by/,
-        /mrp[:\s]*rs/i,
-        /price[:\s]*rs/i,
+        /\bisbn\b(?:[\s:#-]*[\dXx-]{8,})?/i,
+        /©|\(c\)\s*\d{4}/,
+        /\ball rights reserved\b/i,
+        /\breprint\s+\d{4}/i,
+        /\bfirst published\b/i,
+        /\bprinted (?:by|in|at)\b/i,
+        /\bprepared by\b/i,
+        /\bmrp[:\s]*rs/i,
+        /\bprice[:\s]*(?:rs|inr|usd|₹)/i,
+        /\b(?:read and find out|think about it|talk about it|look and learn|do and learn|go and learn)\b/i,
       ];
       for (const p of metadataPatterns) {
         if (p.test(text)) return false;
@@ -668,22 +988,85 @@ function validateAndCleanItems(items: unknown[], type: string): unknown[] {
 
       // Type-specific validation
       if (type === "mcq") {
-        const opts = Array.isArray(r.options) ? r.options : [];
-        const q = typeof r.question === "string" ? r.question : "";
-        const ca =
-          typeof r.correctAnswer === "string"
-            ? r.correctAnswer
-            : "";
-        if (!q || q.length < 5) return false;
+        // Models vary BOTH the key names and the value shapes they use for
+        // MCQs (options vs choices, correctAnswer vs answer vs index). Any
+        // mismatch used to silently drop the item, which is why selected MCQs
+        // came back as a heading with no questions. Normalize every
+        // equivalent shape instead of rejecting it.
+        const q =
+          (typeof r.question === "string" && r.question) ||
+          (typeof r.prompt === "string" && r.prompt) ||
+          (typeof r.q === "string" && r.q) ||
+          (typeof r.statement === "string" && r.statement) ||
+          "";
+        if (q) r.question = q;
+
+        // Options: "options" | "choices" | "answers" | "optionList",
+        // as an array or as an object keyed by letter/index.
+        let rawOptions: unknown =
+          r.options ?? r.choices ?? r.answers ?? r.optionList ?? r.options_list;
+        if (!Array.isArray(rawOptions) && rawOptions && typeof rawOptions === "object") {
+          rawOptions = Object.values(rawOptions as Record<string, unknown>);
+        }
+        if (Array.isArray(rawOptions)) {
+          r.options = rawOptions
+            .map((o: unknown) =>
+              typeof o === "string"
+                ? o.replace(/^\s*[A-Da-d][).:\-]\s+/, "").trim()
+                : formatValue(o)
+            )
+            .filter((s: string) => s.length > 0);
+        }
+
+        // Correct answer: try every common key. Booleans are skipped because
+        // "correct": true is a flag, not an answer.
+        let rawAnswer: unknown = [
+          r.correctAnswer,
+          r.correct_answer,
+          r.answer,
+          r.correctOption,
+          r.correct_option,
+          r.correctIndex,
+          r.correct_index,
+          r.answerIndex,
+          r.answer_index,
+        ].find((v) => v !== undefined && v !== null && typeof v !== "boolean");
+
+        const optionList = Array.isArray(r.options) ? (r.options as unknown[]) : [];
+        if (typeof rawAnswer === "number" && optionList.length > 0) {
+          const idx = rawAnswer >= 0 && rawAnswer < optionList.length ? rawAnswer : rawAnswer - 1;
+          rawAnswer = optionList[idx];
+        }
+        if (typeof rawAnswer === "string") {
+          const trimmedAnswer = rawAnswer.trim();
+          const letterOnly = /^[A-Da-d]$/.test(trimmedAnswer)
+            ? trimmedAnswer
+            : trimmedAnswer.match(/^([A-Da-d])[).:\-]/)?.[1];
+          if (letterOnly && optionList.length > 0) {
+            const idx = letterOnly.toUpperCase().charCodeAt(0) - 65;
+            const target = optionList[idx];
+            if (typeof target === "string") rawAnswer = target;
+          } else if (/^\d+$/.test(trimmedAnswer) && optionList.length > 0) {
+            const n = Number(trimmedAnswer);
+            const idx = n >= 0 && n < optionList.length ? n : n - 1;
+            const target = optionList[idx];
+            if (typeof target === "string") rawAnswer = target;
+          } else {
+            rawAnswer = trimmedAnswer.replace(/^\s*[A-Da-d][).:\-]\s+/, "").trim();
+          }
+        }
+        if (typeof rawAnswer === "string") r.correctAnswer = rawAnswer;
+
+        const opts = Array.isArray(r.options) ? (r.options as unknown[]) : [];
+        const question = typeof r.question === "string" ? r.question : "";
+        const answer = typeof r.correctAnswer === "string" ? r.correctAnswer : "";
+        if (!question || question.length < 5) return false;
         if (opts.length < 2) return false;
-        if (!ca) return false;
-        if (ca.length > q.length * 2) return false;
+        if (!answer) return false;
+        // Only reject if the answer is absurdly longer than the question (e.g. 5x)
+        if (answer.length > question.length * 5 && question.length < 20) return false;
         const uniqueOpts = new Set(
-          opts.map((o) =>
-            formatValue(o)
-              .toLowerCase()
-              .trim()
-          )
+          opts.map((o) => formatValue(o).toLowerCase().trim())
         );
         if (uniqueOpts.size < 2) return false;
         return true;
@@ -695,7 +1078,16 @@ function validateAndCleanItems(items: unknown[], type: string): unknown[] {
         const c =
           typeof r.content === "string" ? r.content : "";
         if (!h && !c) return false;
-        if (c.length < 10) return false;
+        if (c.length < 8) return false;
+        const words = c.split(/\s+/).length;
+        // Remove notes that are just metadata
+        if (/^(?:read and find out|think about it|talk about it|reprint|edition|isbn|copyright)/i.test(c)) return false;
+        // Remove very short fragments (fewer than 4 words)
+        if (words < 4) return false;
+        // Accept if has heading and some content
+        if (h && c.length >= 10) return true;
+        // Accept content with at least some words
+        if (words >= 3) return true;
         return true;
       }
 
@@ -718,16 +1110,37 @@ function validateAndCleanItems(items: unknown[], type: string): unknown[] {
             ? r.question
             : "";
         if (!stmt) return false;
+        // Accept boolean or string ("True"/"False") answers — models return both.
+        if (typeof r.answer !== "boolean" && typeof r.correctAnswer === "string") {
+          r.answer = r.correctAnswer;
+        } else if (typeof r.answer !== "boolean" && typeof r.correctAnswer === "boolean") {
+          r.answer = r.correctAnswer;
+        }
+        if (typeof r.answer === "string") {
+          const lower = r.answer.trim().toLowerCase();
+          if (lower === "true") r.answer = true;
+          else if (lower === "false") r.answer = false;
+        }
         if (typeof r.answer !== "boolean") return false;
         return true;
       }
 
       if (type === "fill_blank") {
+        // Models use varying key names for fill-in-the-blank items — accept them all.
         const q =
-          typeof r.question === "string" ? r.question : "";
+          (typeof r.question === "string" && r.question) ||
+          (typeof r.sentence === "string" && r.sentence) ||
+          (typeof r.text === "string" && r.text) ||
+          (typeof r.blank === "string" && r.blank) ||
+          "";
+        if (q) r.question = q;
         const a =
-          typeof r.answer === "string" ? r.answer : "";
-        if (!q || !a) return false;
+          (typeof r.answer === "string" && r.answer) ||
+          (typeof r.blank === "string" && r.blank) ||
+          (typeof r.correctAnswer === "string" && r.correctAnswer) ||
+          "";
+        if (a) r.answer = a;
+        if (!r.question || !r.answer) return false;
         return true;
       }
 
@@ -737,7 +1150,7 @@ function validateAndCleanItems(items: unknown[], type: string): unknown[] {
         const b =
           typeof r.back === "string" ? r.back : "";
         if (!f || !b) return false;
-        if (f.length > 200 || b.length > 300) return false;
+        if (f.length > 200 || b.length > 1500) return false;
         return true;
       }
 
@@ -942,6 +1355,37 @@ interface SubjectPromptContext {
   hasQuestionBank: boolean;
 }
 
+/**
+ * Lightweight keyword-based subject sniffing (no AI call) so generation
+ * prompts get an honest subject even though /study/generate has no explicit
+ * subject field.
+ */
+function sniffSubject(text: string): string {
+  const sample = text.slice(0, 12_000).toLowerCase();
+  if ((text.match(/[\u0900-\u097F]/g) || []).length > sample.length * 0.08) {
+    return "Hindi";
+  }
+  const counts: Record<string, number> = {
+    Mathematics: (sample.match(/\b(?:equation|formula|solve|factorise|factorize|matrix|determinant|polynomial|trigonometry|geometry|algebra|derivative|integral|probability)\b/g) || []).length,
+    Physics: (sample.match(/\b(?:velocity|acceleration|force|newton|momentum|resistance|circuit|refraction|reflection|wavelength|ohm|joule|amplitude)\b/g) || []).length,
+    Chemistry: (sample.match(/\b(?:atom|molecule|compound|reaction|acid|base|salt|oxidation|reduction|periodic|element|valency|electrolysis)\b/g) || []).length,
+    Biology: (sample.match(/\b(?:cell|tissue|organism|photosynthesis|respiration|enzyme|dna|chromosome|digestion|circulatory|neuron|reproduction)\b/g) || []).length,
+    History: (sample.match(/\b(?:king|empire|dynasty|revolution|war|treaty|century|colonial|independence|civilisation|civilization)\b/g) || []).length,
+    Geography: (sample.match(/\b(?:climate|monsoon|rainfall|plateau|river|soil erosion|latitudes|longitude|glacier|vegetation|continent)\b/g) || []).length,
+    Civics: (sample.match(/\b(?:democracy|constitution|parliament|government|citizen|election|federalism|secularism)\b/g) || []).length,
+    English: (sample.match(/\b(?:story|character|narrator|novel|poem|poet|protagonist|theme)\b/g) || []).length,
+  };
+  let best = "";
+  let bestCount = 0;
+  for (const [subject, n] of Object.entries(counts)) {
+    if (n > bestCount) {
+      best = subject;
+      bestCount = n;
+    }
+  }
+  return bestCount >= 3 ? best : "";
+}
+
 function getSubjectContext(
   text: string,
   subjectHint?: string
@@ -1040,30 +1484,66 @@ function buildMcqInstructions(
 - Example BAD MCQ: "What is correct? A) 3x + y = 1  B) ..."`;
   }
 
-  return `MCQ RULES:
-- Question must be a clear, specific question testing understanding
-- Each MCQ has exactly 4 options (A, B, C, D)
-- Exactly one option is correct
-- Options should be roughly equal in length and plausible
-- Correct answer must be supported by the source material
-- Include a brief explanation for why the correct answer is right
-- Do NOT make obviously wrong or nonsensical distractors
-- Each question tests a different concept from the source
-- Do NOT copy long passages as questions or answers`;
+  return `MCQ RULES (based on CBSE board exam patterns):
+- Question must be clear, specific, and test deep understanding — not surface recall
+- Each MCQ has exactly 4 options (A, B, C, D). Exactly one is correct
+- Mix question types across your set:
+  • Factual recall: "Who...", "What...", "Where...", "When..."
+  • Comprehension: "What does X suggest about Y?", "Which event shows Z?"
+  • Inference: "What can be inferred about...", "The author implies that..."
+  • Vocabulary-in-context: "The word X in line Y means..."
+  • "NOT true / NOT correct" type: "Which of the following is NOT true about..."
+  • "All of the above" / "None of the above" when genuinely appropriate
+- Options should be roughly equal in length, plausible, and require careful reading
+- Correct answer must be directly supported by the source material
+- Include a brief explanation (1-2 sentences) for why the correct answer is right
+- Each question tests a DIFFERENT concept, character, event, or detail from the source
+- Do NOT copy long passages as questions — reformulate as concise questions
+- Do NOT make distractors obviously wrong or nonsensical
+- Example GOOD MCQ: "What does Horace Danby's habit of studying houses for weeks before robbing them suggest about his character? A) He is impulsive  B) He is cautious and methodical  C) He is frightened  D) He is lazy"
+- Example GOOD MCQ: "Which of the following is NOT true about Horace Danby? A) He was fifty years old  B) He collected rare books  C) He was a professional thief  D) He lived alone"
+- Example BAD MCQ: "What is the story about? A) A thief  B) A book  C) A house  D) A person"`;
 }
 
 function buildNotesInstructions(
-  _ctx: SubjectPromptContext
+  ctx: SubjectPromptContext
 ): string {
-  return `NOTES RULES:
-- Each note item has a short heading (5-15 words) and concise content (2-4 sentences)
-- Content must be source-grounded: every fact must come from the uploaded material
-- Structure notes hierarchically: key concept → explanation → important details
-- Use bullet points or numbered lists within content where helpful
-- Do NOT write wall-of-text paragraphs
-- Cover different concepts across all source sections
-- Prioritize examinable concepts and definitions
-- Include relevant examples from the source`;
+  const litNotes = ctx.isLanguage ? `
+LITERATURE-SPECIFIC NOTE STRUCTURE:
+When generating notes for English literature, create these distinct note types:
+1. **Chapter Summary** — A flowing 5-8 sentence narrative covering the complete plot from beginning to end, including the climax and resolution. Name characters, describe key events in order, and mention the setting.
+2. **Character Sketch** (one per major character) — A 4-6 sentence paragraph covering: name, age/appearance if mentioned, personality traits with evidence from the text, role in the story, and moral complexity if any.
+3. **Theme Analysis** — A 3-5 sentence paragraph identifying the central theme(s), how the author develops them, and what message the reader is meant to take away.
+4. **Important Events** — Key plot points described in 2-3 sentences each, showing cause and effect.
+5. **Literary Devices** — Identify metaphors, irony, symbolism, foreshadowing with specific examples from the text.` : "";
+
+  return `NOTES RULES (concise study-friendly revision notes):
+- Each note item has a SHORT HEADING (5-12 words) and CONTENT (2-4 concise sentences)
+- Content MUST be concise and study-friendly — do NOT rewrite the entire chapter
+- Each note covers ONE concept, character, event, or idea in 2-4 sharp sentences
+- Remove repetition and unnecessary elaboration — keep only important, exam-relevant information
+- Content must be SOURCE-GROUNDED: every fact must come from the uploaded material
+- Write in complete, clear sentences — NOT keyword lists or bullet fragments
+- Cover different concepts across ALL sections of the source (beginning, middle, AND end)
+- Prioritize examinable content: key definitions, character analysis, themes, cause-effect, important facts
+- Include only essential examples and evidence — no padding or filler
+- Make notes revision-friendly: a student scanning them should quickly recall the key point
+- Aim for density of information: maximum useful facts in minimum words
+${litNotes}
+SCIENCE/SOCIENCE NOTE STRUCTURE:
+- Write concept explanations as clear prose
+- Preserve formulas, laws, and their conditions/units
+- Include examples and real-world applications from the source
+- Explain processes step-by-step
+
+HISTORY/SOCIAL SCIENCE NOTE STRUCTURE:
+- Include dates, people, places, and chronology
+- Explain causes and effects of events
+- Preserve proper nouns and terminology exactly
+
+BAD example: 'Character: Horace Danby\nAge: 50\nHobby: Books'
+BAD example: 'Horace Danby is a man who steals books.'
+GOOD example: 'Horace Danby is a fifty-year-old unmarried man who appears respectable and operates a successful locksmith business with two helpers. Despite his outward respectability, he secretly commits one carefully planned burglary each year to fund his passion for collecting rare and expensive books. He studies his target houses for weeks beforehand, learning about the family, the servants, and the layout. His methodical approach — and the irony that a seemingly honest man is actually a thief — drives the story's central theme of appearances versus reality.'`;
 }
 
 function buildMnemonicInstructions(): string {
@@ -1083,15 +1563,107 @@ function buildMnemonicInstructions(): string {
 }
 
 function buildFlashcardInstructions(): string {
-  return `FLASHCARD RULES:
-- Each flashcard has a front (question/prompt) and back (answer/response)
-- Front must be a single, focused question or term (1 sentence)
-- Back must be a concise, complete answer (1-3 sentences max)
-- Do NOT put paragraphs on flashcards — keep them atomic
-- Each card tests ONE specific concept
-- Front should be phrased as a question when possible
-- Back should give the answer directly without rephrasing the question
-- Cover different topics from the source material`;
+  return `FLASHCARD RULES - HIGH-QUALITY ACTIVE RECALL POINTS:
+
+Each flashcard is a concise, high-yield study point extracted from the source. NOT a question - a focused factual summary.
+
+FORMAT:
+- front: A short topic label or key concept name (3-8 words)
+- back: The key facts, definition, relationship, or explanation as a concise point (1-3 sentences)
+- Each point must be self-contained and immediately useful for revision
+
+EXAMPLES of GOOD flashcards:
+  front: "Horace Danby's dual life"
+  back: "A fifty-year-old locksmith who appears respectable but secretly commits one carefully planned burglary per year to fund his rare book collection."
+
+  front: "The deception at Shotover Grange"
+  back: "A young woman pretends to be the homeowner, tricks Horace into opening the safe barehanded, then frames him using his fingerprints."
+
+  front: "Chlorophyll's role in photosynthesis"
+  back: "Chlorophyll absorbs light energy in the chloroplasts, converting it to chemical energy that drives the conversion of CO2 and H2O into glucose."
+
+  front: "Newton's Second Law"
+  back: "F = ma - force equals mass times acceleration. The net force on an object equals the product of its mass and acceleration."
+
+EXAMPLES of BAD flashcards (REJECT these patterns):
+  "Tell me about Horace" (too vague)
+  "What is the story about?" (question format, not a point)
+  "Name the characters" (not a study point)
+
+COVERAGE RULES:
+- Cover ALL major concepts, characters, events, themes, definitions, laws, formulas, processes, and important details from the source
+- Each point must test a DIFFERENT concept - no repetition
+- Prioritize examinable content: character analysis, themes, key events, definitions, processes, cause-effect, important facts
+- Include ALL important points - do not skip any major concept or detail
+- Generate the FULL requested number of flashcards with no truncation or abbreviation`;
+}
+
+
+function buildMindmapInstructions(): string {
+  return `MINDMAP RULES - SYSTEMATIC FULL-SCOPE COVERAGE:
+
+When generating a mind map, you MUST systematically cover the entire scope of the provided material. Do NOT hyper-focus on a single section, character, character profile, or specific detail. Ensure the branches of the mind map balance ALL major components of the whole source, including all key topics, key characters (if applicable), the complete chronological progression, the climax/turning points, the resolution, and the core themes from the beginning to the end.
+
+- Structure: one central topic node, 12-18 main branches radiating outward, each with 4-6 children.
+- Each branch MUST have a "branch" field (the main concept, 3-8 words) and a "children" array of specific facts/details (4-18 words each).
+- Create one branch PER distinct section, paragraph, verse, stanza, or topic from the source. If the source has 6 paragraphs, there must be at least 6 branches. Do NOT compress multiple sections into one branch.
+- Balance coverage: no single section or topic should dominate. Spread branches evenly across ALL parts of the source from beginning to end.
+- Include ALL important concepts, characters, events, themes, processes, formulas, relationships, cause/effect chains, and key details from beginning to end.
+- Do NOT skip any major topic or section.`;
+}
+
+// ── Source Analysis ─────────────────────────────────────────────────────────
+
+/**
+ * Structured source understanding — a single lightweight AI call that
+ * extracts the conceptual backbone of the source before generation.
+ * Returns a structured string to embed in the generation prompt.
+ */
+async function analyzeSource(text: string, ctx: SubjectPromptContext): Promise<string> {
+  const langHint = ctx.isLanguage ? "For literature: identify themes, symbolism, imagery, tone, character relationships, and deeper meanings." : "";
+  const prompt = `You are an expert academic analyst. Analyze the following study material and extract a structured understanding.
+
+Identify (only what the source actually contains — do NOT invent):
+- Main topic and subject
+- Key concepts, terms, and definitions
+- ${ctx.isLanguage ? "Characters (names, traits, relationships), plot events, themes, literary devices, symbolism, deeper meanings" : "Key facts, processes, laws, formulas"}
+- ${ctx.isMath ? "Equations, methods, conditions, and problem types" : "Cause-and-effect relationships, important details"}
+- Structure: how the material is organized (chapters, sections, parts)
+- Any examinable details: dates, names, numbers, formulas, examples
+
+${langHint}
+
+Return ONLY a structured JSON object (no markdown fences):
+{
+  "mainTopic": "...",
+  "keyConcepts": ["concept1", "concept2", ...],
+  "importantDetails": ["detail1", "detail2", ...],
+  "${ctx.isLanguage ? "characters" : "keyEntities"}": ["entity1", "entity2", ...],
+  "examFocus": ["topic1 likely to appear on exam", ...]
+}
+
+Do NOT include metadata (page numbers, copyright, ISBN, publisher info, section headers like READ AND FIND OUT).
+
+SOURCE:
+${sourceForPrompt(text)}`;
+
+  try {
+    const result = await generateContent(prompt);
+    if (!result) return "";
+    const parsed = parseModelJson(result.text);
+    // Build a human-readable analysis to inject into the generation prompt
+    const parts: string[] = [];
+    if (parsed.mainTopic) parts.push(`Main Topic: ${parsed.mainTopic}`);
+    if (Array.isArray(parsed.keyConcepts) && parsed.keyConcepts.length) parts.push(`Key Concepts: ${parsed.keyConcepts.slice(0, 15).join(", ")}`);
+    if (Array.isArray(parsed.importantDetails) && parsed.importantDetails.length) parts.push(`Important Details: ${parsed.importantDetails.slice(0, 15).join(", ")}`);
+    if (Array.isArray(parsed.characters) && parsed.characters.length) parts.push(`Characters/Entities: ${parsed.characters.slice(0, 10).join(", ")}`);
+    if (Array.isArray(parsed.keyEntities) && parsed.keyEntities.length) parts.push(`Key Entities: ${parsed.keyEntities.slice(0, 10).join(", ")}`);
+    if (Array.isArray(parsed.examFocus) && parsed.examFocus.length) parts.push(`Exam Focus: ${parsed.examFocus.slice(0, 10).join(", ")}`);
+    return parts.join("\n");
+  } catch {
+    // If analysis fails, generation can still proceed without it
+    return "";
+  }
 }
 
 // ── Main Generation Prompt Builder ───────────────────────────────────────────
@@ -1104,17 +1676,22 @@ function buildGenerationPrompt(
   difficulty: string,
   topic: string | null,
   ctx: SubjectPromptContext,
-  extraInstruction = ""
+  extraInstruction = "",
+  sourceAnalysis = ""
 ) {
   const requested = requestedTypes
     .map((type) => `${type} = ${typeLabels[type] ?? type}`)
     .join("\n");
 
   const subjectInstructions = buildSubjectInstructions(ctx);
+  const analysisBlock = sourceAnalysis
+    ? `\nSOURCE ANALYSIS (pre-studied key concepts and structure):\n${sourceAnalysis}\n\nUse this analysis to ensure your generated items cover the identified key concepts, important details, and exam-focus areas. Generate items that test understanding of these specific concepts.\n`
+    : "";
   const mcqInstructions = buildMcqInstructions(ctx);
   const notesInstructions = buildNotesInstructions(ctx);
   const mnemonicInstructions = buildMnemonicInstructions();
   const flashcardInstructions = buildFlashcardInstructions();
+  const mindmapInstructions = buildMindmapInstructions();
 
   const difficultyGuide =
     difficulty === "easy"
@@ -1134,34 +1711,61 @@ CRITICAL RULES — follow these without exception:
 
 1. SOURCE GROUNDING: Every generated item MUST be directly supported by the uploaded study material. Do NOT invent facts, equations, definitions, or examples that are not in the source. If a piece of information is not in the source, do not generate a study item about it.
 
-2. METADATA EXCLUSION: The source material may contain document metadata (author names, page numbers, copyright notices, publisher info, ISBN numbers, file headers). NEVER generate study items from metadata. Only generate from actual educational content.
+2. METADATA EXCLUSION: The source material may contain document metadata (author names, page numbers, copyright notices, publisher info, ISBN numbers, file headers, section headers like READ AND FIND OUT, THINK ABOUT IT, TALK ABOUT IT, reprint dates, edition references). NEVER generate study items from metadata. Only generate from actual educational content.
 
 3. NO COPYING: Never copy chunks of the source text as questions, answers, or notes. Every generated item must be reformulated as a proper study aid. Questions must test understanding, not reproduce text.
 
 4. DISTINCT ITEMS: Every generated item must be distinctly different from every other item. Do not create variations of the same question. Cover different concepts, facts, and aspects of the material.
 
-5. QUALITY OVER QUANTITY: It is better to have ${requestedCount} excellent, source-grounded items than ${requestedCount} mediocre ones. If the source material supports fewer items, generate fewer but make them high quality.
+5. QUALITY OVER QUANTITY: For question-based formats, it is better to have ${requestedCount} excellent, source-grounded items than ${requestedCount} mediocre ones. If the source material supports fewer items, generate fewer but make them high quality. For chapter-sweep formats (notes, difficult_words, mnemonics, definitions, formulas, mindmap), generate ALL items needed to cover the entire source - do not limit the quantity.
+
+6. NO GENERIC QUESTIONS: Every question MUST name a specific concept, character, event, or idea from the source. Test deep understanding, not surface recall.
+   BAD: 'What is the importance of trust?' / 'Explain the character.' / 'What happened?' / 'Why is this important?'
+   GOOD: 'Why did Horace Danby steal every year, and what did he use the money for?'
+   GOOD: 'Why can Horace Danby be described as respectable but not completely honest?'
+   GOOD: 'What irony lies in the title "A Question of Trust" given the events of the story?'
+   MIX question types: factual recall, comprehension, inference, vocabulary-in-context, "NOT true" type, cause-and-effect, thematic analysis.
+
+7. ADAPT TO SUBJECT: Adapt your output to the subject matter. For English literature: reference specific characters, events, themes, literary devices. For Science: reference specific processes, laws, experiments, formulas. For Math: generate real problems requiring calculation. For History: reference specific dates, events, people, cause-and-effect. For Social Science: reference specific concepts, theories, examples.
+
+8. COMPLETE COVERAGE: Generate items that cover the ENTIRE source, not just the beginning. Include concepts from the middle and end of the material as well.
+
+9. NO ELLIPSIS: Never use '...' or truncate content. Every item must be complete.
+
+10. ENGLISH LITERATURE: For English literature sources, generate questions that reference specific characters, events, themes, and literary devices. Questions must demonstrate comprehension of the specific chapter/story, not generic literature questions.
 
 ${subjectInstructions}
 
 DIFFICULTY: ${difficultyGuide}
 ${langInstruction}
 FOCUS: ${topic || "All topics in the material"}
-ITEM COUNT: Generate up to ${requestedCount} distinct, high-quality items for each requested format.
+ITEM COUNT: For question-based formats (mcq, true_false, fill_blank, short_answer, long_answer), generate EXACTLY ${requestedCount} distinct, high-quality items. You MUST generate all ${requestedCount} items - do not stop early, do not truncate, do not abbreviate. There are no word limits or token limits - generate the complete content.
+For chapter-sweep formats (notes, difficult_words, mnemonics, definitions, flashcards, formulas, mindmap): There is NO item limit. Generate as many items as needed to COVER THE ENTIRE source material comprehensively. Do NOT stop at any number - cover every concept, definition, formula, term, and relationship from the beginning, middle, AND end of the source. These formats must be EXHAUSTIVE - leave nothing out.
 
 FORMAT RULES:
 ${mcqInstructions}
 
-SHORT ANSWER RULES:
-- Question must be specific and test understanding or application
-- Answer must be concise (2-4 sentences) and exam-ready
-- Source-grounded: answer must be derivable from the material
+SHORT ANSWER RULES (2-4 sentences each):
+- Question must be specific and test comprehension, not just recall
+- Good patterns: "What does X suggest about Y?", "How does X respond to Y and why?", "What is the significance of X?"
+- Answer must be concise but COMPLETE — 2-4 well-structured sentences
+- Include specific details from the source (names, events, descriptions)
+- Source-grounded: every claim must be derivable from the material
+- Example GOOD: "Why did Horace Danby feel he could trust the young woman at Shotover Grange?"
+  Answer: "Horace trusted the young woman because she appeared to be the homeowner's wife and seemed frightened by his presence. She knew the safe's combination and appeared to be in a hurry to remove jewels before her husband returned. Her confident demeanor and apparent authority in the house convinced Horace she was legitimate, making him lower his guard."
+- Example BAD: "Why did Horace trust the woman?" (too vague)
+- Example BAD: "Horace trusted her because she was nice." (too shallow)
 
-LONG ANSWER RULES:
-- Question must require structured, detailed response
-- Answer must be well-organized with clear points
-- Include key points as a separate list
+LONG ANSWER RULES (8-15 sentences each):
+- Question must require detailed analysis, comparison, or evaluation
+- Good patterns: "Describe how X develops throughout the story", "Compare X and Y", "Discuss the theme of X with examples"
+- Answer must be well-structured: introduction → body paragraphs → conclusion
+- Include SPECIFIC evidence: character names, events, quotes, descriptions
+- Show ANALYSIS, not just summary — explain WHY and HOW, not just WHAT
 - Source-grounded: all facts must come from the material
+- Example GOOD: "How does the story 'A Question of Trust' explore the theme of appearances versus reality? Support your answer with examples from the text."
+  Answer should discuss: Horace's respectable exterior vs. secret thievery, the lady's pretended authority vs. her true identity, the irony of 'honour among thieves', and how the title itself reflects the theme.
+- Example BAD: "Tell me about the story." (too open-ended, no analytical focus)
 
 TRUE/FALSE RULES:
 - Statement must be clearly true or clearly false based on the source
@@ -1175,10 +1779,43 @@ FILL-IN-THE-BLANK RULES:
 
 ${notesInstructions}
 
-MIND MAP RULES:
-- Branch must be a key concept from the source
-- Children must be related sub-concepts or aspects (2-5 items)
-- Show actual concept relationships, not just a list
+MIND MAP RULES — CRITICAL:
+
+The mind map must show a GENUINE hierarchical understanding of the source — a visual study guide that reveals structure and relationships, not a flat list of paragraphs.
+
+STRUCTURE:
+- 12-18 main branches, each with 4-6 children
+- Create one branch PER distinct section, paragraph, verse, stanza, or topic from the source - never compress multiple sections into one branch
+- Each branch represents a MAJOR CONCEPT, theme, character, process, or event
+- Each child is a SPECIFIC fact, relationship, or sub-concept
+- The hierarchy must reveal HOW ideas connect — cause→effect, character→trait→evidence, concept→definition→example
+
+BRANCH (main node):
+- 3-8 words — a meaningful concept, not a fragment
+- Must represent a distinct, important aspect of the source
+- BAD: "Characters" (too generic). GOOD: "Horace Danby's Dual Life" (specific)
+- BAD: "Events" (too generic). GOOD: "The Deception at Shotover Grange" (specific)
+- BAD: "Science" (too generic). GOOD: "Photosynthesis: Light-Dependent Stage" (specific)
+
+CHILDREN (sub-nodes):
+- 4-18 words — ONE complete meaningful fact per child
+- Must be specific, grounded in the source, and worth remembering
+- Preserve names, dates, numbers, formulas, and key details
+- Show relationships: cause/effect, trait/evidence, concept/example
+- BAD: "Studied two weeks" (fragment). GOOD: "Studied the house for two weeks to learn family routines" (complete)
+- BAD: "Planned jewels" (fragment). GOOD: "Planned to steal jewels worth £15,000 from Shotover Grange" (complete)
+- NEVER use "..." or truncated fragments or empty placeholders
+
+SUBJECT ADAPTATION:
+- Story/literature → main characters, plot arc, conflict, theme, literary devices, key events, setting, irony
+- Science → definition, components, properties, process/mechanism, examples, applications, real-world connections
+- Mathematics → concept, definition, conditions, method/steps, formula, examples, common mistakes
+- History/social science → causes, key events, important people, effects, dates/locations, significance
+
+RELATIONSHIPS:
+- Where the source shows connections (cause→effect, compare/contrast, before/after), show them as parent→child or sibling relationships
+- Do NOT just convert paragraphs into bullet points — RESTRUCTURE the information into a logical hierarchy
+- Every child must be supported by the source; no invented content
 
 DEFINITION RULES:
 - Term must be a key concept from the source
@@ -1191,24 +1828,725 @@ FORMULA RULES:
 - Include conditions/context when available
 
 DIFFICULT WORDS RULES:
-- Only include genuinely difficult or technical vocabulary
+- Extract ALL difficult, technical, archaic, literary, or subject-specific vocabulary from EVERY part of the source — beginning, middle, and end.
+- Include at least 10-15 difficult words (more if the source has them). Do not stop at 1 or 2 words — cover all vocabulary across the entire chapter.
 - Meaning must be accurate and contextual
 - Include usage example from the source
+- Include words from ALL paragraphs/sections, not just one
 
 ${mnemonicInstructions}
 
 ${flashcardInstructions}
+${mindmapInstructions}
 
 RETURN VALID JSON ONLY:
 {"title":"...","summary":"...","topics":["..."],"sections":[{"type":"requested type id","title":"...","items":[...]}]}
 
 Include exactly one section for every requested type in the requested order. If a format cannot be filled from the source, return an empty items array.
 
+CRITICAL MCQ RULES (if MCQs are requested):
+- You MUST return a section with type "mcq" containing the requested number of MCQs
+- Each MCQ MUST have exactly 4 options (A, B, C, D), exactly one correct answer, and a clear explanation
+- If you cannot generate enough MCQs from the source, generate fewer but never return an empty mcq section
+- Never skip the MCQ section — it must always be present when mcq is in the requested types
+- MCQ quality: each question must test a specific concept from the source, have plausible distractors, and require careful reading to answer correctly
+
 ${extraInstruction ? extraInstruction + "\n\n" : ""}REQUESTED OUTPUTS:
 ${requested}
 
 COMPLETE STUDY MATERIAL:
 ${sourceForPrompt(text)}`;
+}
+
+// ── Generation Pipeline ───────────────────────────────────────────────────────
+// Shared by the JSON response and the streaming (SSE) response so both paths
+// generate identically.
+
+type GenProgressPhase =
+  | "plan"
+  | "analyzing"
+  | "type-start"
+  | "type-done"
+  | "type-empty"
+  | "complete"
+  | "error";
+
+type GenProgressEvent = {
+  phase: GenProgressPhase;
+  type?: string;
+  title?: string;
+  message?: string;
+  itemCount?: number;
+  progress?: string;
+  error?: string;
+  status?: number;
+  pack?: unknown;
+};
+
+type GenCoreInput = {
+  text: string;
+  types: string[];
+  count: number;
+  language: string;
+  difficulty: string;
+  topic?: string | null;
+};
+
+/** Formats whose item count is chosen by the user. */
+const QUESTION_TYPES = new Set([
+  "mcq",
+  "short_answer",
+  "long_answer",
+  "true_false",
+  "fill_blank",
+]);
+
+/**
+ * Formats that must sweep the ENTIRE source. Their item count is independent
+ * of the question count.
+ */
+const COMPREHENSIVE_TYPES = new Set([
+  "notes",
+  "difficult_words",
+  "mnemonics",
+  "definitions",
+  "flashcards",
+  "formulas",
+  "mindmap",
+]);
+
+/**
+ * Split requested formats into AI calls.
+ *
+ * Chapter-sweep formats produce very long output, so they get their own
+ * (smaller) calls and never share one with question formats. Mixing them used
+ * to overflow a single response and silently truncate whichever formats came
+ * last - which is why selected MCQs / True-False / Mind Maps kept coming back
+ * as an empty heading.
+ */
+function planBatches(types: string[]): string[][] {
+  const comprehensive = types.filter((type) => COMPREHENSIVE_TYPES.has(type) && type !== "mindmap");
+  const mindmap = types.filter((type) => type === "mindmap");
+  const questions = types.filter((type) => !COMPREHENSIVE_TYPES.has(type));
+  const batches: string[][] = [];
+  // Comprehensive types (except mindmap) in groups of 2
+  for (let i = 0; i < comprehensive.length; i += 2)
+    batches.push(comprehensive.slice(i, i + 2));
+  // Mindmap always gets its own dedicated batch — its nested JSON structure
+  // (12-18 branches × 4-6 children) is too large to share a call with other types.
+  for (const type of mindmap)
+    batches.push([type]);
+  // Question types in groups of 3
+  for (let i = 0; i < questions.length; i += 3)
+    batches.push(questions.slice(i, i + 3));
+  return batches;
+}
+
+function makeAbortError() {
+  const error = new Error("Generation cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    Boolean(error) &&
+    typeof error === "object" &&
+    (error as { name?: string }).name === "AbortError"
+  );
+}
+
+function countItemsForType(pack: unknown, type: string): number {
+  if (!pack || typeof pack !== "object") return 0;
+  const sections = (pack as { sections?: unknown }).sections;
+  if (!Array.isArray(sections)) return 0;
+  const section = sections.find(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      (entry as { type?: unknown }).type === type
+  ) as { items?: unknown } | undefined;
+  return Array.isArray(section?.items) ? section.items.length : 0;
+}
+
+/** Turn any generation error into a clear, user-facing message. */
+function generationErrorMessage(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message : "Generation failed.";
+  if (
+    /429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded your current quota/i.test(
+      message
+    )
+  ) {
+    return /requests per day|daily quota/i.test(message)
+      ? "Your Gemini API daily quota has been exhausted. Try again tomorrow, or increase your quota in Google AI Studio."
+      : "Gemini API rate limit reached. Wait a moment and try again.";
+  }
+  return message.length > 300 ? message.slice(0, 300) + "..." : message;
+}
+
+function isQuotaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded your current quota/i.test(
+    message
+  );
+}
+
+function isDailyQuotaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /requests per day|daily quota/i.test(message);
+}
+
+/**
+ * Run the whole generation pipeline, reporting progress as it goes.
+ * Throws on failure - including when the source yields no content at all,
+ * so a failed generation can never masquerade as an empty study pack.
+ */
+async function generateStudyPackCore(
+  input: GenCoreInput,
+  options: {
+    onEvent?: (event: GenProgressEvent) => void;
+    signal?: AbortSignal;
+  } = {}
+): Promise<any> {
+  const emit = options.onEvent ?? (() => {});
+  const signal = options.signal;
+  const ensureActive = () => {
+    if (signal?.aborted) throw makeAbortError();
+  };
+  const { text, types, count, language, difficulty, topic } = input;
+
+  // NOTE: "topic" is a study focus, NOT a subject - passing it here used to
+  // disable every subject-specific prompt mode.
+  const ctx = getSubjectContext(text, sniffSubject(text));
+  const maxMode = count === 100;
+
+  emit({
+    phase: "plan",
+    message: "Planning your study pack…",
+    progress: `0/${types.length}`,
+  });
+
+  // Deep source understanding: one analysis call before generation.
+  emit({
+    phase: "analyzing",
+    type: "source",
+    title: "Analyzing source",
+    message: "Analyzing your source material…",
+  });
+  let sourceAnalysis = "";
+  try {
+    sourceAnalysis = await analyzeSource(text, ctx);
+    if (sourceAnalysis)
+      console.log(`[CRAM] source analysis: ${sourceAnalysis.length} chars`);
+  } catch {
+    // Analysis is best-effort; generation proceeds without it.
+  }
+  ensureActive();
+  emit({
+    phase: "type-done",
+    type: "source",
+    title: "Analyzing source",
+    itemCount: 0,
+  });
+
+  const generateBatch = async (
+    requestedTypes: string[],
+    requestedCount: number,
+    extra = ""
+  ) => {
+    if (!requestedTypes.length) return null;
+    const prompt = buildGenerationPrompt(
+      text,
+      requestedTypes,
+      requestedCount,
+      language,
+      difficulty,
+      topic,
+      ctx,
+      extra,
+      sourceAnalysis
+    );
+    const t0 = Date.now();
+    let lastError: Error | null = null;
+    if (!HAS_AI_KEY)
+      throw new Error(
+        "AI returned no response (check GEMINI_API_KEY and quota)."
+      );
+    // Retry with exponential backoff for transient errors (max 3 attempts).
+    // JSON parse failures are retried too - a malformed model response must
+    // never silently turn into an empty study pack.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      ensureActive();
+      try {
+        const result = await generateContent(prompt);
+        if (!result)
+          throw new Error(
+            "AI returned no response (check GEMINI_API_KEY and quota)."
+          );
+        const parsed = parseModelJson(result.text);
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+        console.log(
+          `[CRAM] generateBatch(${requestedTypes.join(",")}): ${elapsed}s ok`
+        );
+        return parsed;
+      } catch (e: any) {
+        if (isAbortError(e)) throw e;
+        lastError = e instanceof Error ? e : new Error(String(e));
+        const msg = lastError.message;
+        const isTransient =
+          /429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded|503|502|UNAVAILABLE|invalid (?:structured )?(?:JSON|response)|empty response|no response/i.test(
+            msg
+          );
+        if (!isTransient || attempt === 2) break;
+        const delay = 2000 * Math.pow(2, attempt);
+        console.log(
+          `[CRAM] generateBatch attempt ${attempt + 1} failed (${msg.slice(0, 80)}), retrying in ${delay}ms`
+        );
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    throw lastError ?? new Error("AI generation failed.");
+  };
+
+  const normalizeBatch = (value: unknown, batchTypes: string[]) => {
+    try {
+      return normalizePack(value, batchTypes);
+    } catch (error) {
+      console.error(
+        `[CRAM] normalize failed for [${batchTypes.join(",")}]:`,
+        error instanceof Error ? error.message : error
+      );
+      return null;
+    }
+  };
+
+  const emptyPack = () => ({
+    title: `${APP_NAME} Study Pack`,
+    summary: "Generated only from your uploaded study material.",
+    topics: [] as string[],
+    sections: types.map((type) => ({
+      type,
+      title: typeLabels[type] ?? type,
+      items: [] as unknown[],
+    })),
+  });
+
+  const mergeInto = (target: any, pack: any) => {
+    if (!pack) return;
+    for (const section of pack.sections ?? []) target.sections.push(section);
+    if (typeof pack.title === "string" && pack.title && !target.title)
+      target.title = pack.title;
+    if (typeof pack.summary === "string" && pack.summary && !target.summary)
+      target.summary = pack.summary;
+    if (Array.isArray(pack.topics)) target.topics.push(...pack.topics);
+  };
+
+  const validateSections = (pack: any) => {
+    for (const section of pack.sections) {
+      const before = section.items.length;
+      section.items = validateAndCleanItems(section.items, section.type);
+      if (before !== section.items.length) {
+        console.log(
+          `[CRAM]   validate "${section.type}": ${before} → ${section.items.length} items`
+        );
+      }
+    }
+  };
+
+  /**
+   * Any selected format that came back empty gets regenerated on its own,
+   * with instructions naming the exact JSON shape that format needs.
+   */
+  const retryEmptySections = async (pack: any) => {
+    // Without an API key there is nothing to retry against.
+    if (!HAS_AI_KEY) return;
+    const failed = pack.sections.filter(
+      (section: any) => section.items.length === 0 && types.includes(section.type)
+    );
+    if (!failed.length) return;
+    console.log(
+      `[CRAM] retrying ${failed.length} empty sections: ${failed
+        .map((section: any) => section.type)
+        .join(", ")}`
+    );
+    for (const section of failed) {
+      for (let retry = 0; retry < 5; retry++) {
+        ensureActive();
+        try {
+          if (retry > 0) await new Promise((r) => setTimeout(r, 2000 * retry));
+          ensureActive();
+          const retryCount = COMPREHENSIVE_TYPES.has(section.type)
+            ? Math.max(count * 5, 30)
+            : count;
+          const retryMsg =
+            section.type === "mcq"
+              ? `Generate ${count} high-quality MCQs from the source. Each MCQ MUST have these exact keys: "question" (string), "options" (array of exactly 4 strings), "correctAnswer" (the full text of the correct option), "explanation" (string). Return a JSON sections array containing one section with type "mcq". Do not skip any questions. Do not return empty items.`
+              : section.type === "true_false"
+              ? `Generate ${count} true/false statements from the source. Each MUST have these exact keys: "statement" (string), "answer" (boolean true or false), "explanation" (string). Return a JSON sections array containing one section with type "true_false". Do not skip any statements. Do not return empty items.`
+              : section.type === "fill_blank"
+              ? `Generate ${count} fill-in-the-blank questions from the source. Each MUST have these exact keys: "question" (a sentence containing ____ for the blank) and "answer" (the word or phrase). Return a JSON sections array containing one section with type "fill_blank". Do not skip any. Do not return empty items.`
+              : section.type === "mindmap"
+              ? `Generate a COMPREHENSIVE mind map of the ENTIRE source material. Systematically cover the entire scope - do NOT hyper-focus on a single section, character, or detail. Balance ALL major components: all key topics, key characters (if applicable), the complete chronological progression, turning points, the resolution, and the core themes from beginning to end. Create 12-18 main branches, each with 4-6 children. Create one branch PER distinct section, paragraph, verse, stanza, or topic - if the source has 6 paragraphs, there must be at least 6 branches. Do NOT compress multiple sections into one branch. Each branch MUST have a "branch" key (main concept, 3-8 words) and a "children" key (array of specific facts/details, 4-18 words each). Spread branches evenly across ALL parts of the source from beginning to end. Cover ALL concepts, themes, processes, events, relationships, cause/effect chains, and key details. Do NOT skip any major topic. Return a JSON sections array containing one section with type "mindmap". Do not return empty items.`
+              : section.type === "notes"
+              ? `Generate CONCISE, study-friendly notes covering ALL key topics from the source. Each note must have a "heading" key (5-12 words) and a "content" key (2-4 concise, information-dense sentences). Do NOT rewrite the chapter — keep only important, exam-relevant facts. Cover all major topics from beginning to end. Return a JSON sections array containing one section with type "notes". Do not skip any topics. Do not return empty items.`
+              : `Retry: generate high-quality ${section.type} items from the source material. The previous attempt produced 0 valid items. For chapter-sweep formats, generate ALL items needed to cover the entire source. For question formats, generate exactly ${retryCount} items. Do not skip, do not truncate. Return a JSON sections array containing one section with type "${section.type}".`;
+          const retryResult = await generateBatch(
+            [section.type],
+            retryCount,
+            retryMsg
+          );
+          const retryNormalized = normalizeBatch(retryResult, [section.type]);
+          const retrySection = retryNormalized?.sections.find(
+            (entry: any) => entry.type === section.type
+          );
+          if (retrySection && retrySection.items.length > 0) {
+            console.log(
+              `[CRAM]   retry ${retry + 1} for "${section.type}" succeeded: ${retrySection.items.length} items`
+            );
+            section.items = validateAndCleanItems(
+              retrySection.items,
+              section.type
+            );
+            break;
+          }
+          console.log(
+            `[CRAM]   retry ${retry + 1} for "${section.type}": still 0 items`
+          );
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          console.error(
+            `[CRAM]   retry ${retry + 1} for "${section.type}" error:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+      emit({
+        phase: section.items.length > 0 ? "type-done" : "type-empty",
+        type: section.type,
+        title: section.title,
+        itemCount: section.items.length,
+      });
+    }
+  };
+
+  // ── Maximum coverage mode (user asked for "Maximum") ───────────────────────
+  if (maxMode) {
+    const questionRequested = types.filter((type) => QUESTION_TYPES.has(type));
+    const otherRequested = types.filter((type) => !QUESTION_TYPES.has(type));
+    const batches: any[] = [];
+
+    if (otherRequested.length) {
+      ensureActive();
+      for (const type of otherRequested)
+        emit({
+          phase: "type-start",
+          type,
+          title: typeLabels[type] ?? type,
+          message: `Generating ${typeLabels[type] ?? type}…`,
+        });
+      batches.push(
+        await generateBatch(
+          otherRequested,
+          30,
+          "For non-question formats, be concise and information-dense. Notes must be 2-4 sentences per item. No padding or repetition."
+        )
+      );
+      for (const type of otherRequested)
+        emit({
+          phase: "type-done",
+          type,
+          title: typeLabels[type] ?? type,
+          itemCount: countItemsForType(batches[batches.length - 1], type),
+        });
+    }
+
+    if (questionRequested.length) {
+      const maxPasses = 3;
+      for (let pass = 0; pass < maxPasses; pass++) {
+        ensureActive();
+        batches.push(
+          await generateBatch(
+            questionRequested,
+            40,
+            `This is MAXIMUM COVERAGE mode, pass ${pass + 1} of ${maxPasses}. CRITICAL RULES: (1) Each MCQ, Short Answer, and Long Answer must test a UNIQUE concept, fact, definition, or detail from the source \u2014 NEVER test the same information twice. (2) MCQs, Short Answers, and Long Answers must be COLLECTIVELY DISTINCT: if a Short Answer covers Theme X, the MCQs must NOT also test Theme X \u2014 cover different aspects across the three formats. (3) Cover the ENTIRE chapter systematically: plot, characters, themes, settings, vocabulary, literary devices, cause-effect, definitions, processes, formulas \u2014 everything examinable. (4) Each question must require genuine recall or analysis, not surface-level lookups. Do not repeat any question or concept from your own previous pass. Aim for up to 40 DISTINCT items per format, each testing different source material.`
+          )
+        );
+      }
+    }
+
+    const merged: any = {
+      title: `${APP_NAME} Maximum Study Pack`,
+      summary:
+        "Maximum source-supported coverage generated from your study material.",
+      topics: [],
+      sections: [],
+    };
+    for (const type of types) {
+      const items = batches.flatMap((batch) => {
+        const section = Array.isArray(batch?.sections)
+          ? batch.sections.find((entry: any) => entry?.type === type)
+          : null;
+        return Array.isArray(section?.items) ? section.items : [];
+      });
+      const validated = validateAndCleanItems(items, type);
+      merged.sections.push({
+        type,
+        title: typeLabels[type] ?? type,
+        items: dedupeItems(validated).slice(0, 100),
+      });
+    }
+    merged.topics = [
+      ...new Set(
+        batches.flatMap((batch) =>
+          Array.isArray(batch?.topics)
+            ? batch.topics.filter(
+                (value: unknown): value is string => typeof value === "string"
+              )
+            : []
+        )
+      ),
+    ].slice(0, 30);
+
+    const finalized = normalizeBatch(merged, types) ?? emptyPack();
+    for (const section of finalized.sections)
+      emit({
+        phase: section.items.length > 0 ? "type-done" : "type-empty",
+        type: section.type,
+        title: section.title,
+        itemCount: section.items.length,
+      });
+    const total = finalized.sections.reduce(
+      (sum: number, section: any) => sum + section.items.length,
+      0
+    );
+    if (total === 0 && HAS_AI_KEY)
+      throw new Error(
+        "The AI could not generate any content from this material. Please try again."
+      );
+    return finalized;
+  }
+
+  // ── Standard mode ─────────────────────────────────────────────────────────
+  const t0 = Date.now();
+  const batches = planBatches(types);
+  console.log(
+    `[CRAM] generating ${types.length} formats in ${batches.length} calls: ${batches
+      .map((batch) => batch.join(","))
+      .join(" | ")}`
+  );
+
+  const merged: any = { title: "", summary: "", topics: [], sections: [] };
+  let completed = 0;
+  let lastError: Error | null = null;
+
+  for (const batch of batches) {
+    ensureActive();
+    for (const type of batch) {
+      emit({
+        phase: "type-start",
+        type,
+        title: typeLabels[type] ?? type,
+        message: `Generating ${typeLabels[type] ?? type}…`,
+        progress: `${completed}/${types.length}`,
+      });
+    }
+    try {
+      const effectiveCount = batch.some((type) => COMPREHENSIVE_TYPES.has(type))
+        ? Math.max(count * 5, 30)
+        : count;
+      const result = await generateBatch(batch, effectiveCount);
+      const normalizedBatch = normalizeBatch(result, batch);
+      if (normalizedBatch) {
+        mergeInto(merged, normalizedBatch);
+        for (const type of batch) {
+          const itemCount = countItemsForType(normalizedBatch, type);
+          console.log(`[CRAM]   ${type}: ${itemCount} raw items`);
+          emit({
+            phase: itemCount > 0 ? "type-done" : "type-empty",
+            type,
+            title: typeLabels[type] ?? type,
+            itemCount,
+          });
+        }
+      } else {
+        for (const type of batch)
+          emit({
+            phase: "type-empty",
+            type,
+            title: typeLabels[type] ?? type,
+            itemCount: 0,
+          });
+      }
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(
+        `[CRAM] call [${batch.join(",")}] failed:`,
+        lastError.message
+      );
+      for (const type of batch)
+        emit({
+          phase: "type-empty",
+          type,
+          title: typeLabels[type] ?? type,
+          itemCount: 0,
+        });
+    }
+    completed += batch.length;
+    emit({
+      phase: "plan",
+      message: `Completed ${completed} of ${types.length} formats`,
+      progress: `${completed}/${types.length}`,
+    });
+  }
+
+  const normalized = normalizeBatch(merged, types) ?? emptyPack();
+  console.log(
+    `[CRAM] normalized: ${normalized.sections.length} sections, ${
+      normalized.sections.filter((section: any) => section.items.length > 0)
+        .length
+    } with items`
+  );
+
+  validateSections(normalized);
+  for (const section of normalized.sections) {
+    const sample = section.items[0] as any;
+    console.log(
+      `[CRAM]   section "${section.type}": ${section.items.length} items${
+        sample ? ` (keys: ${Object.keys(sample).join(", ")})` : ""
+      }`
+    );
+  }
+
+  await retryEmptySections(normalized);
+
+  // Authoritative per-format result (validation may have trimmed items).
+  for (const section of normalized.sections) {
+    emit({
+      phase: section.items.length > 0 ? "type-done" : "type-empty",
+      type: section.type,
+      title: section.title,
+      itemCount: section.items.length,
+    });
+  }
+
+  const totalItems = normalized.sections.reduce(
+    (sum: number, section: any) => sum + section.items.length,
+    0
+  );
+  // A pack with nothing in it is a failure, not a result - surface the real
+  // error instead of showing the user empty headings.
+  if (totalItems === 0 && HAS_AI_KEY) {
+    throw (
+      lastError ??
+      new Error(
+        "The AI could not generate any content from this material. Please try again."
+      )
+    );
+  }
+
+  console.log(`[CRAM] total generation time: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  return GenerateStudyPackResponse.parse(normalized);
+}
+
+/**
+ * Stream generation progress as Server-Sent Events, ending with the finished
+ * study pack. Aborting the request stops the pipeline.
+ */
+function streamGenerate(input: GenCoreInput, signal: AbortSignal): Response {
+  const encoder = new TextEncoder();
+  let closed = false;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const stopTimer = () => {
+        if (heartbeat) {
+          clearInterval(heartbeat);
+          heartbeat = null;
+        }
+      };
+
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        stopTimer();
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      };
+
+      const send = (event: GenProgressEvent) => {
+        if (closed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+          );
+        } catch {
+          close();
+        }
+      };
+
+      // Keep intermediaries from timing out during long AI calls.
+      heartbeat = setInterval(() => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(": ping\n\n"));
+        } catch {
+          close();
+        }
+      }, 15_000);
+
+      signal.addEventListener("abort", close);
+
+      generateStudyPackCore(input, { onEvent: send, signal })
+        .then((pack) => {
+          send({
+            phase: "complete",
+            pack,
+            message: "Your study pack is ready.",
+          });
+          close();
+        })
+        .catch((error) => {
+          if (isAbortError(error)) {
+            send({
+              phase: "error",
+              error: "Generation cancelled.",
+              status: 499,
+            });
+          } else {
+            send({
+              phase: "error",
+              error: generationErrorMessage(error),
+              status: isQuotaError(error) ? 429 : 503,
+            });
+          }
+          close();
+        });
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 // ── Request Handler ──────────────────────────────────────────────────────────
@@ -1278,17 +2616,83 @@ export async function handle(request: Request): Promise<Response> {
       );
     try {
       const result = await generateContent(
-        `You are an academic indexer for ${APP_NAME}. Identify 3 to 20 major concepts, headings, chapters, and examinable subtopics from the complete material. Use ONLY the supplied material. Preserve terminology and order. Return JSON only: {"topics":["topic 1","topic 2"]}.\n\n${sourceForPrompt(parsed.data.text)}`
+        `You are an expert academic content indexer for ${APP_NAME}. Your task is to identify the most important EXAMINABLE topics and concepts from the study material.
+
+CRITICAL: Each topic must be a REAL, MEANINGFUL educational concept — not metadata, not page headers, not navigation text.
+
+STRICTLY FORBIDDEN as topics:
+- Section/activity headers: READ AND FIND OUT, THINK ABOUT IT, TALK ABOUT IT, LOOK AND LEARN, DO AND LEARN, EXERCISE, ACTIVITY, PROJECT
+- Page numbers or chapter+page combinations (e.g. 'Chapter 4' followed by page number)
+- Reprint dates, edition info, year ranges (e.g. 'Reprint 2026-27')
+- ISBN, copyright notices, publisher names, prices
+- Book titles repeated as running headers/footers
+- Navigation text (next, previous, back)
+- Table of contents entries
+- Any text that is document structure rather than educational content
+
+REQUIRED as topics (each must describe something a student would actually study):
+- Core themes and main ideas
+- Character profiles and their significance
+- Key events and their consequences
+- Important concepts, definitions, and terminology
+- Cause-and-effect relationships
+- Literary devices and techniques (for literature)
+- Scientific principles and processes (for science)
+- Mathematical concepts and methods (for math)
+- Historical events and their significance (for history)
+
+Each topic must be:
+- 3-60 characters
+- A meaningful phrase describing educational content
+- Grounded in the actual source material
+- Something a teacher would actually test on an exam
+
+Bad: 'READ AND FIND OUT'
+Bad: 'A Question of Trust 21'
+Bad: 'Footprints without Feet 22'
+Good: 'Horace Danby\'s dual life as locksmith and thief'
+Good: 'The irony of trust and deception in the story'
+Good: 'Character traits that make Horace Danby respectable yet dishonest'
+
+Return JSON only: {"topics":["topic 1","topic 2"]}.
+
+${sourceForPrompt(parsed.data.text)}`
       );
+      if (!result) throw new Error("AI returned no response (check GEMINI_API_KEY and quota).");
       const raw = parseModelJson(result.text);
-      const topics = Array.isArray(raw.topics)
+      let topics = Array.isArray(raw.topics)
         ? raw.topics
             .filter((x: unknown): x is string => typeof x === "string")
             .slice(0, 20)
         : [];
+      // Filter out metadata-like topics that are not real educational content
+      topics = topics.filter((t) => {
+        const lower = t.toLowerCase().trim();
+        // Skip very short or purely numeric topics
+        if (lower.length < 3 || /^\d+$/.test(lower)) return false;
+        // Skip topics that are just section headers (with or without numbers)
+        if (/^(?:read and find out|look and learn|do and learn|activity|exercise|project|assignment|homework|class work|let us do|let us review|think about it|talk about it|go and learn|table of contents|index|preface|foreword|acknowledgement|disclaimer|syllabus)(?:\s+\d+)?$/i.test(lower)) return false;
+        // Skip topics containing reprint/edition info
+        if (/reprint|edition|impression|\d{4}[-–]\d{2,4}|reprint\s+\d{4}/i.test(lower)) return false;
+        // Skip topics that are mostly metadata (page numbers, copyright, ISBN)
+        if (/^(?:copyright|isbn|page|©|all rights|published by|printed by|first published|second published)/i.test(lower)) return false;
+        // Skip topics that end with a page number (chapter+page pattern like "Title 21")
+        if (/^.{3,80}\s+\d{1,3}$/.test(t.trim())) return false;
+        // Skip topics that are just a year range
+        if (/^\d{4}\s*[-–]\s*\d{2,4}$/.test(lower)) return false;
+        // Skip topics containing year ranges like '2026-27' or '2020-2021'
+        if (/\d{4}\s*[-–]\s*\d{2,4}/i.test(lower)) return false;
+        // Skip topics that are just reprint references
+        if (/reprint/i.test(lower)) return false;
+        // Skip topics that are just edition references
+        if (/\b(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+(?:edition|reprint|impression)\b/i.test(lower)) return false;
+        return isRealTopic(t);
+      });
+      console.log(`[CRAM] topics detected: ${topics.length} topics: ${topics.slice(0, 5).join(", ")}${topics.length > 5 ? "..." : ""}`);
       return json(DetectStudyTopicsResponse.parse({ topics }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Topic detection failed.";
+      console.error(`[CRAM] topic detection error: ${msg.slice(0, 200)}`);
       // Rate limit / quota → 429
       if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded your current quota/i.test(msg)) {
         const isDaily = /requests per day|daily quota/i.test(msg);
@@ -1324,163 +2728,60 @@ export async function handle(request: Request): Promise<Response> {
         },
         400
       );
-    const { text, types, count, language, difficulty, topic } =
-      parsed.data;
+    const { text, types, count, language, difficulty, topic } = parsed.data;
     if (types.length > MAX_TYPES)
       return json(
         { error: `Choose up to ${MAX_TYPES} output formats at once.` },
         400
       );
 
-    // Detect subject context for this generation
-    const ctx = getSubjectContext(text, topic || undefined);
-
-    const questionTypes = new Set([
-      "mcq",
-      "short_answer",
-      "long_answer",
-      "true_false",
-      "fill_blank",
-      "flashcards",
-    ]);
-    const maxMode = count === 100;
-
-    const generateBatch = async (
-      requestedTypes: string[],
-      requestedCount: number,
-      extra = ""
-    ) => {
-      if (!requestedTypes.length) return null;
-      const prompt = buildGenerationPrompt(
-        text,
-        requestedTypes,
-        requestedCount,
-        language,
-        difficulty,
-        topic,
-        ctx,
-        extra
-      );
-      const result = await generateContent(prompt);
-      if (!result) return null;
-      return parseModelJson(result.text);
+    const input: GenCoreInput = {
+      text,
+      types,
+      count,
+      language,
+      difficulty,
+      topic,
     };
 
+    // Streaming response: real per-format progress, and the client can abort
+    // mid-generation. Clients that do not request a stream get plain JSON.
+    if (`${request.headers.get("accept") ?? ""}`.includes("text/event-stream"))
+      return streamGenerate(input, request.signal);
+
     try {
-      if (!maxMode) {
-        const result = await generateBatch(types, count);
-        const normalized = normalizePack(result, types);
-
-        // Validate each section's items
-        for (const section of normalized.sections) {
-          section.items = validateAndCleanItems(
-            section.items,
-            section.type
-          );
-        }
-
-        return json(normalized);
-      }
-
-      // Maximum mode: multi-pass generation with deduplication
-      const questionRequested = types.filter((type) =>
-        questionTypes.has(type)
-      );
-      const otherRequested = types.filter(
-        (type) => !questionTypes.has(type)
-      );
-      const batches: any[] = [];
-
-      if (otherRequested.length) {
-        batches.push(
-          await generateBatch(
-            otherRequested,
-            30,
-            "For non-question formats, be comprehensive but concise. Do not pad with repetition."
-          )
-        );
-      }
-
-      if (questionRequested.length) {
-        const maxPasses = 3;
-        for (let pass = 0; pass < maxPasses; pass++) {
-          batches.push(
-            await generateBatch(
-              questionRequested,
-              40,
-              `This is MAXIMUM COVERAGE mode, pass ${pass + 1} of ${maxPasses}. Cover different facts, concepts, definitions, examples, and examinable details from across the source. Do not repeat from your own pass. Aim for up to 40 distinct items per format.`
-            )
-          );
-        }
-      }
-
-      const merged: any = {
-        title: `${APP_NAME} Maximum Study Pack`,
-        summary:
-          "Maximum source-supported coverage generated from your study material.",
-        topics: [],
-        sections: [],
-      };
-      for (const type of types) {
-        const items = batches.flatMap((batch) => {
-          const section = Array.isArray(batch?.sections)
-            ? batch.sections.find((s: any) => s?.type === type)
-            : null;
-          return Array.isArray(section?.items) ? section.items : [];
-        });
-        const validated = validateAndCleanItems(items, type);
-        merged.sections.push({
-          type,
-          title: typeLabels[type] ?? type,
-          items: dedupeItems(validated).slice(0, 100),
-        });
-      }
-      merged.topics = [
-        ...new Set(
-          batches.flatMap((batch) =>
-            Array.isArray(batch?.topics)
-              ? batch.topics.filter(
-                  (x: unknown): x is string => typeof x === "string"
-                )
-              : []
-          )
-        ),
-      ].slice(0, 30);
-
-      return json(normalizePack(merged, types));
-    } catch (e) {
+      return json(await generateStudyPackCore(input));
+    } catch (error) {
+      // The browser aborted the request - nobody is listening for a response.
+      if (isAbortError(error))
+        return json({ error: "Generation cancelled.", cancelled: true }, 499);
       if (!HAS_AI_KEY) {
         return json({
-          title: "Study Pack (Demo)",
-          summary: "Demo mode: Add GEMINI_API_KEY for full AI generation.",
+          title: `${APP_NAME} Study Pack (Demo)`,
+          summary: "Demo mode: add GEMINI_API_KEY for full AI generation.",
           topics: [],
-          sections: types.map(t => ({ type: t, title: t, items: [] })),
+          sections: types.map((type) => ({
+            type,
+            title: typeLabels[type] ?? type,
+            items: [],
+          })),
         });
       }
-      const msg = e instanceof Error ? e.message : "Generation failed.";
-      // Rate limit / quota → 429 with clear message
-      if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit|exceeded your current quota/i.test(msg)) {
-        const isDaily = /requests per day|daily quota/i.test(msg);
-        return json(
-          {
-            error: isDaily
-              ? "Your Gemini API daily quota has been exhausted. Try again tomorrow, or increase your quota in Google AI Studio."
-              : "Gemini API rate limit reached. Wait a moment and try again.",
-            quotaExhausted: isDaily,
-            retryable: !isDaily,
-          },
-          429
-        );
-      }
+      const quota = isQuotaError(error);
       return json(
-        { error: msg.length > 300 ? msg.slice(0, 300) + "..." : msg },
-        503
+        {
+          error: generationErrorMessage(error),
+          quotaExhausted: quota && isDailyQuotaError(error),
+          retryable: !quota,
+        },
+        quota ? 429 : 503
       );
     }
   }
 
   // ── Chat ────────────────────────────────────────────────────────────────
   if (path === "/study/chat") {
+    console.log(`[CRAM] /study/chat called, question=${body?.question?.slice(0, 50) || "?"}, text=${body?.text?.length || "?"} chars`);
     const parsed = AskStudyDocumentBody.safeParse(body);
     if (!parsed.success)
       return json(
@@ -1510,9 +2811,11 @@ ${parsed.data.question}
 
 Respond with VALID JSON ONLY: {"answer":"your answer here"}`
       );
+      if (!result) throw new Error("AI returned no response (check GEMINI_API_KEY and quota).");
       const raw = parseModelJson(result.text);
       const answer =
         typeof raw.answer === "string" ? raw.answer : result.text;
+      console.log(`[CRAM] chat response: ${answer.length} chars`);
       return json(AskStudyDocumentResponse.parse({ answer }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Document chat failed.";
