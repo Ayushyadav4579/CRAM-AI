@@ -1,0 +1,106 @@
+name: CRAM AI model training (free CPU runner)
+
+on:
+  push:
+    branches:
+      - agent/cram-ai-model-pipeline
+    paths:
+      - "model-training/**"
+      - ".github/workflows/cram-ai-model.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  train-evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Check out existing CRAM AI repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: model-training/requirements.txt
+
+      - name: Install training and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r model-training/requirements.txt pytest
+
+      - name: Compile and test dataset tooling
+        run: |
+          python -m compileall -q model-training
+          pytest -q model-training/tests
+
+      - name: Prepare licensed held-out science dataset
+        run: |
+          python model-training/prepare_public_dataset.py \
+            --output-dir model-training/data/public \
+            --max-train-questions 1000 \
+            --max-validation-questions 200 \
+            --max-test-questions 200
+          cat model-training/data/public/dataset_metadata.json
+
+      - name: Restore resumable checkpoints
+        uses: actions/cache@v4
+        with:
+          path: artifacts/cram-ai.staging/checkpoints
+          key: cram-ai-checkpoints-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            cram-ai-checkpoints-${{ github.ref_name }}-
+
+      - name: Fine-tune DistilGPT2 on CPU without paid APIs
+        run: |
+          python model-training/train.py \
+            --dataset model-training/data/public/train.jsonl \
+            --eval-dataset model-training/data/public/validation.jsonl \
+            --model-id distilgpt2 \
+            --output artifacts/cram-ai \
+            --epochs 1 \
+            --max-length 192 \
+            --resume
+          cp model-training/data/public/dataset_metadata.json artifacts/cram-ai/dataset_metadata.json
+
+      - name: Evaluate on untouched test questions
+        run: |
+          python model-training/evaluate.py \
+            --model artifacts/cram-ai \
+            --dataset model-training/data/public/test.jsonl \
+            --report artifacts/evaluation.json \
+            --limit 400
+          cat artifacts/evaluation.json
+
+      - name: Test the actual FastAPI model endpoint
+        run: python model-training/smoke_test_api.py
+
+      - name: Save verified adapter weights and evaluation to this branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/cram-ai artifacts/evaluation.json
+          if git diff --cached --quiet; then
+            echo "No model artifact changes to commit."
+          else
+            git commit -m "Store verified CRAM AI model weights and evaluation"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Preserve model and logs as a downloadable workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cram-ai-training-run-${{ github.run_id }}
+          path: |
+            artifacts/cram-ai/
+            artifacts/evaluation.json
+            artifacts/api-smoke.log
+            model-training/data/public/dataset_metadata.json
+          if-no-files-found: warn
+          retention-days: 90
