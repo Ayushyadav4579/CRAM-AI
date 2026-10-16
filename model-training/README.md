@@ -36,8 +36,8 @@ On an environment with enough compute:
 ```bash
 python -m pip install -r model-training/requirements.txt
 python model-training/prepare_public_dataset.py --output-dir model-training/data/public
-python model-training/train.py --dataset model-training/data/public/train.jsonl --eval-dataset model-training/data/public/validation.jsonl --model-id distilgpt2 --output artifacts/cram-ai --epochs 1 --max-length 192 --resume
-python model-training/evaluate.py --model artifacts/cram-ai --dataset model-training/data/public/test.jsonl --report artifacts/evaluation.json --limit 400
+python model-training/train.py --dataset model-training/data/public/train.jsonl --eval-dataset model-training/data/public/validation.jsonl --model-id distilgpt2 --output model-artifacts/cram-ai --epochs 1 --max-length 192 --resume
+python model-training/evaluate.py --model model-artifacts/cram-ai --dataset model-training/data/public/test.jsonl --report artifacts/evaluation.json --limit 400
 python model-training/smoke_test_api.py
 ```
 
@@ -46,7 +46,7 @@ Training uses response-only loss, LoRA, checkpoints, resume support, a weight SH
 ## FastAPI
 
 ```bash
-MODEL_DIR=artifacts/cram-ai python -m uvicorn api:app --app-dir model-training --host 0.0.0.0 --port 8000
+MODEL_DIR=model-artifacts/cram-ai python -m uvicorn api:app --app-dir model-training --host 0.0.0.0 --port 8000
 ```
 
 Endpoints: `GET /health`, `GET /model-info`, `POST /generate`, `POST /study/notes`, `POST /study/mcq`, `POST /study/flashcards`, `POST /study/summary`. It loads the trained LoRA adapter and its base model; if weights are missing or fail to load, generation returns HTTP 503. It contains no hosted AI fallback. To connect this to the existing CRAM frontend, the API needs a durable Python host with outbound access to download the base model or a separately stored base-model cache, plus CORS configuration. The existing Vercel frontend/serverless configuration is not a persistent GPU host.
