@@ -9,7 +9,9 @@ def main():
     root=Path(__file__).resolve().parent
     model_dir=(root.parent/"model-artifacts"/"cram-ai").resolve()
     env=os.environ.copy(); env["MODEL_DIR"]=str(model_dir)
-    log_path=root.parent/"model-artifacts"/"api-smoke.log"\n    log_path.parent.mkdir(parents=True,exist_ok=True)\n    log=open(log_path,"w")
+    log_path=root.parent/"model-artifacts"/"api-smoke.log"
+    log_path.parent.mkdir(parents=True,exist_ok=True)
+    log=open(log_path,"w")
     proc=subprocess.Popen([sys.executable,"-m","uvicorn","api:app","--host","127.0.0.1","--port","8765"],cwd=root,env=env,stdout=log,stderr=subprocess.STDOUT)
     try:
         health=None
