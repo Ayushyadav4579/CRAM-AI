@@ -15,7 +15,7 @@ def main():
         health=None
         deadline=time.time()+240
         while time.time()<deadline:
-            if proc.poll() is not None: raise SystemExit("FastAPI exited before becoming healthy; inspect artifacts/api-smoke.log")
+            if proc.poll() is not None: raise SystemExit("FastAPI exited before becoming healthy; inspect model-artifacts/api-smoke.log")
             try:
                 status,health=request("http://127.0.0.1:8765/health",timeout=5)
                 if status==200 and health.get("model_loaded"): break
