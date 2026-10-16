@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--dataset",required=True)
     parser.add_argument("--eval-dataset",required=True)
     parser.add_argument("--model-id",default=os.getenv("BASE_MODEL","distilgpt2"))
-    parser.add_argument("--output",default="artifacts/cram-ai")
+    parser.add_argument("--output",default="model-artifacts/cram-ai")
     parser.add_argument("--epochs",type=float,default=1.0)
     parser.add_argument("--max-length",type=int,default=192)
     parser.add_argument("--resume",action="store_true")
