@@ -7,7 +7,7 @@ def request(url, data=None, timeout=120):
     with urllib.request.urlopen(req,timeout=timeout) as res: return res.status,json.loads(res.read().decode())
 def main():
     root=Path(__file__).resolve().parent
-    model_dir=(root.parent/"artifacts"/"cram-ai").resolve()
+    model_dir=(root.parent/"model-artifacts"/"cram-ai").resolve()
     env=os.environ.copy(); env["MODEL_DIR"]=str(model_dir)
     log=open(root.parent/"artifacts"/"api-smoke.log","w")
     proc=subprocess.Popen([sys.executable,"-m","uvicorn","api:app","--host","127.0.0.1","--port","8765"],cwd=root,env=env,stdout=log,stderr=subprocess.STDOUT)
