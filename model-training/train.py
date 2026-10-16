@@ -18,6 +18,10 @@ def main():
     parser.add_argument("--max-length",type=int,default=192)
     parser.add_argument("--resume",action="store_true")
     a=parser.parse_args()
+    output_resolved=Path(a.output).resolve()
+    frontend_resolved=Path("artifacts/cram-ai").resolve()
+    if output_resolved==frontend_resolved or frontend_resolved in output_resolved.parents:
+        raise SystemExit("Refusing to write model files inside artifacts/cram-ai because that path belongs to the existing CRAM AI frontend.")
     import torch
     from datasets import load_dataset
     from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
