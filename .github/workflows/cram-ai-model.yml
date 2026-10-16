@@ -6,7 +6,6 @@ on:
       - agent/cram-ai-model-pipeline
     paths:
       - "model-training/**"
-      - ".github/workflows/cram-ai-model.yml"
   workflow_dispatch:
 
 permissions:
@@ -93,6 +92,8 @@ jobs:
             echo "No model artifact changes to commit."
           else
             git commit -m "Store verified CRAM AI model weights and evaluation"
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
