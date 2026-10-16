@@ -4,7 +4,7 @@ This adds a model-training area on the branch `agent/cram-ai-model-pipeline`; it
 
 ## Automated run
 
-A GitHub Actions workflow is configured to run on changes to this directory. It uses GitHub's standard public-repository **CPU** runner (not a GPU runner), installs open-source libraries, runs tests, downloads a public school-science dataset, fine-tunes DistilGPT2 with LoRA, evaluates on a separate test split, starts FastAPI and sends a real inference request. If all steps pass, the adapter weights, tokenizer and evaluation report are committed to `artifacts/` on this branch. A workflow artifact is also uploaded with 90-day retention.
+A GitHub Actions workflow is configured to run on changes to this directory. It uses GitHub's standard public-repository **CPU** runner (not a GPU runner), installs open-source libraries, runs tests, downloads a public school-science dataset, fine-tunes DistilGPT2 with LoRA, evaluates on a separate test split, starts FastAPI and sends a real inference request. If all steps pass, the adapter weights, tokenizer and evaluation report are committed to `model-artifacts/` on this branch. A workflow artifact is also uploaded with 90-day retention.
 
 This is a best-effort free CPU run. The standard runner has no guaranteed GPU, limited temporary disk, and a job time limit. If it times out, the cached checkpoints may allow a later run to resume. GitHub Actions permissions/settings can also prevent a workflow from pushing generated weights; the logs will show this rather than claiming success.
 
