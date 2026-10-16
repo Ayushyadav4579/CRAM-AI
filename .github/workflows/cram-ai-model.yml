@@ -104,7 +104,7 @@ jobs:
           path: |
             model-artifacts/cram-ai/
             model-artifacts/evaluation.json
-            artifacts/api-smoke.log
+            model-artifacts/api-smoke.log
             model-training/data/public/dataset_metadata.json
           if-no-files-found: warn
           retention-days: 90
