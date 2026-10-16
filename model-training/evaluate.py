@@ -5,7 +5,7 @@ def norm(s): return re.sub(r"[^a-z0-9]+"," ",str(s).lower()).strip()
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--model",required=True); p.add_argument("--dataset",required=True)
-    p.add_argument("--report",default="artifacts/evaluation.json"); p.add_argument("--limit",type=int,default=300)
+    p.add_argument("--report",default="model-artifacts/evaluation.json"); p.add_argument("--limit",type=int,default=300)
     a=p.parse_args()
     import torch
     from transformers import AutoTokenizer,AutoModelForCausalLM
