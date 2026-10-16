@@ -53,4 +53,4 @@ Endpoints: `GET /health`, `GET /model-info`, `POST /generate`, `POST /study/note
 
 ## Durability and cost
 
-The workflow commits the small adapter and tokenizer into this public repository branch after evaluation succeeds. It does not commit the full base model (which is downloaded separately) or any private study notes. The workflow artifact is retained for 90 days as a second copy. No paid GPU/service is configured or requested. If you later need a public model API with persistent storage, that hosting must be separately verified for free-tier limits before deployment.
+The workflow commits the small adapter and tokenizer into `model-artifacts/` on this public repository branch after evaluation succeeds. It does not commit the full base model (which is downloaded separately) or any private study notes. The workflow artifact is retained for 90 days as a second copy. No paid GPU/service is configured or requested. If you later need a public model API with persistent storage, that hosting must be separately verified for free-tier limits before deployment.
