@@ -27,24 +27,26 @@ def convert(row, config, split):
     revision_instruction=f"Create a short exam revision Q&A from this science question and its options.\nQuestion: {question}\nOptions:\n{choices_text}"
     common={"expected_key":answer_key,"expected_answer":answer}
     return [
-      {**provenance,**common,"task":"mcq","instruction":mcq_instruction,"response":f"Answer: {answer_key}. {answer}"},
-      {**provenance,**common,"task":"short_answer","instruction":short_instruction,"response":f"{answer_key}. {answer}"},
-      {**provenance,**common,"task":"flashcard","instruction":flash_instruction,"response":json.dumps({"front":question,"back":f"{answer_key}. {answer}"},ensure_ascii=False)},
-      {**provenance,**common,"task":"revision","instruction":revision_instruction,"response":f"Question: {question}\nAnswer: {answer_key}. {answer}"},
+      {**provenance,**common,"expected_key":answer_key,"task":"mcq","instruction":mcq_instruction,"response":f"Answer: {answer_key}. {answer}"},
+      {**provenance,**common,"expected_key":"","task":"short_answer","instruction":short_instruction,"response":f"{answer_key}. {answer}"},
+      {**provenance,**common,"expected_key":"","task":"flashcard","instruction":flash_instruction,"response":json.dumps({"front":question,"back":f"{answer_key}. {answer}"},ensure_ascii=False)},
+      {**provenance,**common,"expected_key":"","task":"revision","instruction":revision_instruction,"response":f"Question: {question}\nAnswer: {answer_key}. {answer}"},
     ]
 def build_rows(configs, split, limit=None, seed=42):
     out=[]; seen=set()
+    per_config_limit = (limit + len(configs) - 1) // len(configs) if limit else None
     for config in configs:
         rows=list(load_split(config,split))
         if split=="train":
             random.Random(seed+sum(map(ord,config))).shuffle(rows)
+        config_start_count=len({x["source_id"] for x in out})
         for row in rows:
             for r in convert(row,config,split):
                 k=digest(key(r["instruction"])+"\n"+key(r["response"]))
                 if k in seen: continue
                 seen.add(k); out.append(r)
-                if limit and len({x["source_id"] for x in out})>=limit: break
-            if limit and len({x["source_id"] for x in out})>=limit: break
+                if per_config_limit and len({x["source_id"] for x in out})-config_start_count>=per_config_limit: break
+            if per_config_limit and len({x["source_id"] for x in out})-config_start_count>=per_config_limit: break
     return out
 def write(path,rows):
     p=Path(path); p.parent.mkdir(parents=True,exist_ok=True)
