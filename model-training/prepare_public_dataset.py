@@ -45,7 +45,6 @@ def build_rows(configs, split, limit=None, seed=42):
                 k=digest(key(r["instruction"])+"\n"+key(r["response"]))
                 if k in seen: continue
                 seen.add(k); out.append(r)
-                if per_config_limit and len({x["source_id"] for x in out})-config_start_count>=per_config_limit: break
             if per_config_limit and len({x["source_id"] for x in out})-config_start_count>=per_config_limit: break
     return out
 def write(path,rows):
