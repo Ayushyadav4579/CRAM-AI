@@ -18,7 +18,7 @@ def test_public_conversion_has_grounded_task_variants():
     assert rows[1]["expected_key"]==""
 
 def test_public_split_limit_keeps_variants_and_both_configs(monkeypatch):
-    monkeypatch.setattr(public,"load_split",lambda config,split:[sample_row("one"),sample_row("two","What provides energy?","A"),sample_row("three","What stores energy?","D")])
+    monkeypatch.setattr(public,"load_split",lambda config,split:[sample_row("one",f"{config}: Which process releases energy?"),sample_row("two",f"{config}: What provides energy?","A"),sample_row("three",f"{config}: What stores energy?","D")])
     rows=public.build_rows(["ARC-Easy","ARC-Challenge"],"train",4,42)
     ids={r["source_id"] for r in rows}
     assert len(ids)==4
