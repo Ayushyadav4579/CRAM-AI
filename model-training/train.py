@@ -43,10 +43,10 @@ def main():
         prompt=f"### Instruction:\n{row['instruction'].strip()}\n### Response:\n"
         answer=row["response"].strip()+tokenizer.eos_token
         prompt_ids=tokenizer(prompt,add_special_tokens=False)["input_ids"]
-        answer_ids=tokenizer(answer,add_special_tokens=False)["input_ids"]
-        ids=(prompt_ids+answer_ids)[:a.max_length]
-        labels=([-100]*min(len(prompt_ids),len(ids))) + answer_ids[:max(0,a.max_length-len(prompt_ids))]
-        labels=labels[:len(ids)]
+        answer_ids=tokenizer(answer,add_special_tokens=False)["input_ids"][:max(8,a.max_length//3)]
+        prompt_ids=prompt_ids[:max(1,a.max_length-len(answer_ids))]
+        ids=prompt_ids+answer_ids
+        labels=([-100]*len(prompt_ids))+answer_ids
         return {"input_ids":ids,"attention_mask":[1]*len(ids),"labels":labels}
     train=train.map(encode,remove_columns=train.column_names,desc="Tokenizing training examples")
     ev=ev.map(encode,remove_columns=ev.column_names,desc="Tokenizing validation examples")
