@@ -37,7 +37,7 @@ On an environment with enough compute:
 python -m pip install -r model-training/requirements.txt
 python model-training/prepare_public_dataset.py --output-dir model-training/data/public
 python model-training/train.py --dataset model-training/data/public/train.jsonl --eval-dataset model-training/data/public/validation.jsonl --model-id distilgpt2 --output model-artifacts/cram-ai --epochs 1 --max-length 192 --resume
-python model-training/evaluate.py --model model-artifacts/cram-ai --dataset model-training/data/public/test.jsonl --report artifacts/evaluation.json --limit 400
+python model-training/evaluate.py --model model-artifacts/cram-ai --dataset model-training/data/public/test.jsonl --report model-artifacts/evaluation.json --limit 400
 python model-training/smoke_test_api.py
 ```
 
