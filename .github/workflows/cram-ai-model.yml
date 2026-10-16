@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: cram-ai-model-training-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   train-evaluate:
     runs-on: ubuntu-latest
