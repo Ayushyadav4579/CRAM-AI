@@ -21,9 +21,13 @@ try:
 except Exception as e: load_error=str(e)
 def gen(prompt,limit=256,temperature=0.0):
     if model is None or tokenizer is None: raise HTTPException(503,detail={"error":"model_not_ready","message":"No verified trained CRAM AI model is loaded. No hosted fallback is configured.","load_error":load_error})
+    if "### Response:" not in prompt:
+        prompt=f"### Instruction:\n{prompt.strip()}\n### Response:\n"
     import torch
     inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=1024)
-    with torch.no_grad(): out=model.generate(**inputs,max_new_tokens=limit,do_sample=temperature>0,temperature=max(temperature,0.1),pad_token_id=tokenizer.eos_token_id)
+    kwargs={"max_new_tokens":limit,"do_sample":temperature>0,"pad_token_id":tokenizer.eos_token_id}
+    if temperature>0: kwargs["temperature"]=temperature
+    with torch.no_grad(): out=model.generate(**inputs,**kwargs)
     return tokenizer.decode(out[0][inputs["input_ids"].shape[1]:],skip_special_tokens=True).strip()
 class GenerateRequest(BaseModel):
     prompt:str=Field(min_length=1,max_length=10000); max_new_tokens:int=Field(default=256,ge=1,le=512); temperature:float=Field(default=0.0,ge=0,le=1.2)
