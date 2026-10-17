@@ -65,7 +65,18 @@ def main():
     test=build_rows(["ARC-Easy","ARC-Challenge"],"test",a.max_test_questions,a.seed)
     if not train or not validation or not test: raise SystemExit("Dataset preparation produced an empty split; refusing to train.")
     train_ids={r["source_id"] for r in train}; val_ids={r["source_id"] for r in validation}; test_ids={r["source_id"] for r in test}
-    if train_ids&val_ids or train_ids&test_ids or val_ids&test_ids: raise SystemExit("Source leakage detected across splits.")
+    if train_ids&val_ids or train_ids&test_ids or val_ids&test_ids: raise SystemExit("Source-ID leakage detected across splits.")
+    def question_fingerprints(rows):
+        values=set()
+        for row in rows:
+            m=re.search(r"Question:\\s*(.*?)\\nOptions:\\n(.*)",row["instruction"],re.S)
+            if m:
+                normalized=re.sub(r"\\W+"," ",(m.group(1)+" "+m.group(2)).lower()).strip()
+                values.add(digest(normalized))
+        return values
+    train_q=question_fingerprints(train); val_q=question_fingerprints(validation); test_q=question_fingerprints(test)
+    if train_q&val_q or train_q&test_q or val_q&test_q:
+        raise SystemExit("Question/option content leakage detected across train, validation, and test splits.")
     write(out/"train.jsonl",train); write(out/"validation.jsonl",validation); write(out/"test.jsonl",test)
     metadata={"dataset_id":DATASET_ID,"source_url":SOURCE_URL,"license":LICENSE,"license_url":"https://creativecommons.org/licenses/by-sa/4.0/","attribution":"Allen Institute for AI, AI2 ARC dataset; see dataset card and paper https://arxiv.org/abs/1803.05457","seed":a.seed,"train_questions":len(train_ids),"validation_questions":len(val_ids),"test_questions":len(test_ids),"train_examples":len(train),"validation_examples":len(validation),"test_examples":len(test),"task_counts":{split:{task:sum(r["task"]==task for r in rows) for task in sorted({r["task"] for r in rows})} for split,rows in [("train",train),("validation",validation),("test",test)]},"limitations":["English school-level science MCQs only; not a complete CBSE/NCERT corpus.","Generated variants share source question/answer and are not independent new facts.","No textbook notes, formulas, definitions, poems or long-answer corpus is included.","Model quality must be assessed on held-out data; nonempty output is not proof of correctness."]}
     (out/"dataset_metadata.json").write_text(json.dumps(metadata,indent=2),encoding="utf-8")
