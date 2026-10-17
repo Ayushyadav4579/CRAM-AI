@@ -100,7 +100,7 @@ def model_info():
     return {"name":"CRAM AI","model_loaded":model is not None,"metadata":meta,"load_error":load_error,"model_dir":str(MODEL_DIR)}
 
 def suspicious_generic_output(prompt:str,response:str)->bool:
-    """Reject malformed JSON, repetitive fragments, and punctuation-heavy gibberish."""
+    """Reject malformed JSON, repetitive fragments, question echoes, and gibberish."""
     text=response.strip()
     if not text:
         return True
@@ -118,8 +118,8 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
                 return True
     normalized_prompt=" ".join(re.findall(r"[a-z0-9]+",prompt.casefold()))
     normalized_response=" ".join(re.findall(r"[a-z0-9]+",text.casefold()))
-    normalized_response=re.sub(r"^(?:answer|response)\\s+", "", normalized_response)
-    question_core=re.split(r"\\b(?:answer in|answer with|explain in|write in)\\b",normalized_prompt,maxsplit=1)[0].strip()
+    normalized_response=re.sub(r"^(?:answer|response)\s+", "", normalized_response)
+    question_core=re.split(r"\b(?:answer in|answer with|explain in|write in)\b",normalized_prompt,maxsplit=1)[0].strip()
     if len(question_core.split())>=3 and normalized_response.startswith(question_core):
         return True
     words=re.findall(r"[A-Za-z]{2,}",text.casefold())
@@ -131,6 +131,7 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
     if punctuation>0.25:
         return True
     return False
+
 
 def validated_payload(response:str,kind:str)->dict[str,Any]:
     payload=result_payload(response,kind)
@@ -162,7 +163,7 @@ def retrieve_note_sentences(question:str,source:str)->list[str]:
     terms=set(re.findall(r"[a-z0-9]+",question.casefold()))-stop
     if not terms:
         terms=set(re.findall(r"[a-z0-9]+",question.casefold()))
-    sentences=[re.sub(r"\\s+"," ",s).strip(" -•\\t") for s in re.split(r"(?<=[.!?])\\s+|\\n+",source) if len(s.split())>=3]
+    sentences=[re.sub(r"\s+"," ",s).strip(" -•\t") for s in re.split(r"(?<=[.!?])\s+|\n+",source) if len(s.split())>=3]
     scored=[]
     for index,sentence in enumerate(sentences):
         words=set(re.findall(r"[a-z0-9]+",sentence.casefold()))
@@ -184,7 +185,7 @@ def answer_from_notes(r:AskNotesRequest):
             "error":"insufficient_source_evidence",
             "message":"I could not find a relevant sentence in the supplied notes. Add the relevant paragraph or ask a narrower question."
         })
-    # This endpoint deliberately returns verbatim evidence instead of pretending a weak model paraphrase is verified.
+    # Return verbatim evidence rather than pretending a weak model paraphrase is verified.
     return {
         "response":"Based on your notes: "+" ".join(sources),
         "answer_mode":"extractive",
