@@ -1,5 +1,5 @@
 """Local CRAM AI model API. It never calls a hosted AI provider or fakes model output."""
-import json, os, re
+import json, os, re, math
 from pathlib import Path
 from typing import Optional, Any
 from fastapi import FastAPI, HTTPException
@@ -67,6 +67,12 @@ class StudyRequest(BaseModel):
     subject:str=Field(default="General",max_length=80)
     count:int=Field(default=8,ge=1,le=20)
 
+class AskNotesRequest(BaseModel):
+    question:str=Field(min_length=1,max_length=1500)
+    text:str=Field(min_length=20,max_length=12000)
+    grade:Optional[int]=Field(default=10,ge=6,le=12)
+    subject:str=Field(default="General",max_length=80)
+
 def result_payload(response:str,kind:str)->dict[str,Any]:
     payload={"response":response,"output_valid":bool(response.strip()),"structured":None,"output_format":kind}
     if kind=="flashcards":
@@ -110,6 +116,12 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
             asks_for_structure=any(word in prompt.casefold() for word in ("flashcard","json","front and back"))
             if not asks_for_structure:
                 return True
+    normalized_prompt=" ".join(re.findall(r"[a-z0-9]+",prompt.casefold()))
+    normalized_response=" ".join(re.findall(r"[a-z0-9]+",text.casefold()))
+    normalized_response=re.sub(r"^(?:answer|response)\\s+", "", normalized_response)
+    question_core=re.split(r"\\b(?:answer in|answer with|explain in|write in)\\b",normalized_prompt,maxsplit=1)[0].strip()
+    if len(question_core.split())>=3 and normalized_response.startswith(question_core):
+        return True
     words=re.findall(r"[A-Za-z]{2,}",text.casefold())
     punctuation=sum(1 for ch in text if not ch.isalnum() and not ch.isspace())/max(1,len(text))
     if len(text)>12 and len(words)<2:
@@ -144,6 +156,43 @@ def generate(r:GenerateRequest):
             "message":"CRAM AI could not produce a usable plain-text answer after one retry. No hosted fallback is configured."
         })
     return {"response":answer,"model":"CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":True}
+
+def retrieve_note_sentences(question:str,source:str)->list[str]:
+    stop={"what","is","are","was","were","the","a","an","why","how","when","where","which","who","does","do","did","can","could","should","would","of","to","for","in","on","at","by","with","from","and","or","but","it","this","that","these","those","explain","tell","me","about","please"}
+    terms=set(re.findall(r"[a-z0-9]+",question.casefold()))-stop
+    if not terms:
+        terms=set(re.findall(r"[a-z0-9]+",question.casefold()))
+    sentences=[re.sub(r"\\s+"," ",s).strip(" -•\\t") for s in re.split(r"(?<=[.!?])\\s+|\\n+",source) if len(s.split())>=3]
+    scored=[]
+    for index,sentence in enumerate(sentences):
+        words=set(re.findall(r"[a-z0-9]+",sentence.casefold()))
+        overlap=terms & words
+        if not overlap:
+            continue
+        score=len(overlap)/math.sqrt(max(1,len(words)))
+        scored.append((score,index,sentence))
+    if not scored:
+        return []
+    chosen=sorted(sorted(scored,key=lambda item:item[0],reverse=True)[:2],key=lambda item:item[1])
+    return [item[2] for item in chosen]
+
+@app.post("/study/answer")
+def answer_from_notes(r:AskNotesRequest):
+    sources=retrieve_note_sentences(r.question,r.text)
+    if not sources:
+        raise HTTPException(status_code=422,detail={
+            "error":"insufficient_source_evidence",
+            "message":"I could not find a relevant sentence in the supplied notes. Add the relevant paragraph or ask a narrower question."
+        })
+    # This endpoint deliberately returns verbatim evidence instead of pretending a weak model paraphrase is verified.
+    return {
+        "response":"Based on your notes: "+" ".join(sources),
+        "answer_mode":"extractive",
+        "model":"source retrieval from user-provided notes",
+        "model_loaded":model is not None,
+        "output_valid":True,
+        "sources":sources
+    }
 
 @app.post("/study/notes")
 def notes(r:StudyRequest):
