@@ -6,7 +6,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-app=FastAPI(title="CRAM AI Fine-tuned Model API",version="0.2.0")
+# Render's free CPU instance is heavily constrained; avoid oversized BLAS thread pools.
+os.environ.setdefault("OMP_NUM_THREADS","1")
+os.environ.setdefault("MKL_NUM_THREADS","1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS","1")
+import torch
+torch.set_num_threads(1)
+try:
+    torch.set_num_interop_threads(1)
+except RuntimeError:
+    pass
+
+app=FastAPI(title="CRAM AI Fine-tuned Model API",version="0.3.0")
 origins=[x.strip() for x in os.getenv("CORS_ORIGINS","*").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware,allow_origins=origins,allow_methods=["GET","POST","OPTIONS"],allow_headers=["*"])
 
@@ -27,16 +38,16 @@ try:
 except Exception as e:
     load_error=f"{type(e).__name__}: {e}"
 
-def gen(prompt:str,limit:int=192,temperature:float=0.0)->str:
+def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The saved CRAM AI adapter is not loadable on this server. No hosted fallback is configured.","model_dir":str(MODEL_DIR),"load_error":load_error})
     prompt=prompt.strip()
     if "### Response:" not in prompt:
         prompt=f"### Instruction:\n{prompt}\n### Response:\n"
     import torch
-    inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=768)
+    inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=512)
     kwargs={"max_new_tokens":limit,"do_sample":temperature>0,"pad_token_id":tokenizer.eos_token_id,
-            "eos_token_id":tokenizer.eos_token_id,"repetition_penalty":1.08}
+            "eos_token_id":tokenizer.eos_token_id,"repetition_penalty":1.08,"use_cache":True,"max_time":45}
     if temperature>0: kwargs["temperature"]=temperature
     with torch.inference_mode():
         out=model.generate(**inputs,**kwargs)
@@ -47,7 +58,7 @@ def gen(prompt:str,limit:int=192,temperature:float=0.0)->str:
 
 class GenerateRequest(BaseModel):
     prompt:str=Field(min_length=1,max_length=10000)
-    max_new_tokens:int=Field(default=192,ge=1,le=384)
+    max_new_tokens:int=Field(default=96,ge=1,le=192)
     temperature:float=Field(default=0.0,ge=0,le=1.0)
 
 class StudyRequest(BaseModel):
@@ -111,11 +122,16 @@ def validated_payload(response:str,kind:str)->dict[str,Any]:
 
 @app.post("/generate")
 def generate(r:GenerateRequest):
-    answer=gen(r.prompt,r.max_new_tokens,r.temperature)
+    direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\\nQuestion: "+r.prompt)
+    answer=gen(direct_prompt,min(r.max_new_tokens,64),r.temperature)
+    if not answer.strip() or suspicious_generic_output(r.prompt,answer):
+        # One bounded retry with a stronger plain-text instruction; never substitute a fake answer.
+        retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\\nQuestion: "+r.prompt)
+        answer=gen(retry_prompt,min(r.max_new_tokens,32),0.0)
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         raise HTTPException(status_code=502,detail={
             "error":"invalid_model_output",
-            "message":"CRAM AI returned empty or flashcard-shaped output instead of answering the prompt. No hosted fallback is configured."
+            "message":"CRAM AI could not produce a usable plain-text answer after one retry. No hosted fallback is configured."
         })
     return {"response":answer,"model":"CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":True}
 
