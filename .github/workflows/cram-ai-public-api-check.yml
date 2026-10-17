@@ -1,0 +1,32 @@
+name: CRAM AI public API verification
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/cram-ai-model-pipeline]
+    paths:
+      - ".github/workflows/cram-ai-public-api-check.yml"
+      - ".github/scripts/check_public_api.py"
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test deployed health, model identity, generation, and invalid input
+        continue-on-error: true
+        env:
+          CRAM_API_URL: https://cram-ai-api.onrender.com
+        run: python .github/scripts/check_public_api.py
+      - name: Preserve public API diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cram-ai-public-api-check
+          path: public-api-check.json
+          if-no-files-found: warn
+          retention-days: 30
