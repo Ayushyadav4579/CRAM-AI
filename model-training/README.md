@@ -36,12 +36,12 @@ On an environment with enough compute:
 ```bash
 python -m pip install -r model-training/requirements.txt
 python model-training/prepare_public_dataset.py --output-dir model-training/data/public
-python model-training/train.py --dataset model-training/data/public/train.jsonl --eval-dataset model-training/data/public/validation.jsonl --model-id distilgpt2 --output model-artifacts/cram-ai --epochs 1 --max-length 192 --resume
+python model-training/train.py --dataset model-training/data/public/train.jsonl --eval-dataset model-training/data/public/validation.jsonl --model-id distilgpt2 --output model-artifacts/cram-ai --epochs 2 --max-length 256 --resume
 python model-training/evaluate.py --model model-artifacts/cram-ai --dataset model-training/data/public/test.jsonl --report model-artifacts/evaluation.json --limit 400
 python model-training/smoke_test_api.py
 ```
 
-Training uses response-only loss, LoRA, checkpoints, resume support, a weight SHA-256 manifest, and post-training tokenizer/weight checks. Evaluation reports held-out MCQ answer-key accuracy and answer text match rates; those metrics are imperfect proxies, and poor scores must be reported rather than hidden.
+Training uses response-only loss, LoRA, checkpoints, resume support, a weight SHA-256 manifest, and post-training tokenizer/weight checks. Evaluation parses only an explicit leading A/B/C/D answer key, reports exact answer match and token F1, and keeps per-example predictions for audit. These metrics are still imperfect proxies; poor scores must be reported rather than hidden. The workflow stores artifacts before running the stricter API quality gate so a failed quality test does not erase the trained checkpoint.
 
 ## FastAPI
 
