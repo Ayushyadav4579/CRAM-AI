@@ -1,4 +1,4 @@
-import json, os, time, urllib.error, urllib.request
+import json, os, time, re, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,9 +46,34 @@ ready = health_status == 200 and health_body.get("model_loaded") is True
 generated_text = str(gen_body.get("response","")).strip()
 generated_lower = generated_text.casefold()
 expected_concept = ("photosynthesis" in generated_lower) or ("plant" in generated_lower and ("sunlight" in generated_lower or "light" in generated_lower))
-generation_ok = gen_status == 200 and gen_body.get("model_loaded") is True and bool(generated_text) and gen_body.get("output_valid") is True and expected_concept
+normalized_generated = re.sub(r"[^a-z0-9]+", " ", generated_lower).strip()
+normalized_without_label = re.sub(r"^(?:answer|response)\\s+", "", normalized_generated)
+echo_like = normalized_without_label.startswith("what is photosynthesis")
+generation_ok = gen_status == 200 and gen_body.get("model_loaded") is True and bool(generated_text) and gen_body.get("output_valid") is True and expected_concept and not echo_like
 invalid_rejected = invalid_status in (400, 422)
-report["summary"] = {"model_loaded":ready, "generation_endpoint_works":generation_ok, "generation_contains_expected_concept":expected_concept, "invalid_input_rejected":invalid_rejected}
+
+notes_text = "Photosynthesis is the process by which green plants make food using sunlight, carbon dioxide, and water."
+notes_status, notes_answer = call("/study/answer", {"question":"What is photosynthesis?","text":notes_text}, timeout=30)
+report["checks"].append({"name":"source-grounded-answer","status":notes_status,"body":notes_answer})
+notes_body = notes_answer if isinstance(notes_answer, dict) else {}
+notes_response = str(notes_body.get("response","")).casefold()
+source_grounded_ok = notes_status == 200 and notes_body.get("answer_mode") == "extractive" and "photosynthesis" in notes_response and "sunlight" in notes_response and bool(notes_body.get("sources"))
+
+unrelated_status, unrelated = call("/study/answer", {"question":"What is electricity?","text":notes_text}, timeout=30)
+report["checks"].append({"name":"unrelated-question-rejected","status":unrelated_status,"body":unrelated})
+unrelated_body = unrelated if isinstance(unrelated, dict) else {}
+unrelated_message = str((unrelated_body.get("detail") or {}).get("message","")).casefold() if isinstance(unrelated_body.get("detail"),dict) else str(unrelated_body.get("detail","")).casefold()
+unrelated_rejected = unrelated_status == 422 and "could not find a relevant sentence" in unrelated_message
+
+report["summary"] = {
+    "model_loaded":ready,
+    "generation_endpoint_works":generation_ok,
+    "generation_contains_expected_concept":expected_concept,
+    "generation_is_not_question_echo":not echo_like,
+    "invalid_input_rejected":invalid_rejected,
+    "source_grounded_answer_works":source_grounded_ok,
+    "unrelated_question_rejected":unrelated_rejected
+}
 OUT.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 print(json.dumps(report, indent=2, ensure_ascii=False))
 if not ready or not generation_ok or not invalid_rejected:
