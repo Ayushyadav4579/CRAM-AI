@@ -66,8 +66,8 @@ jobs:
             --eval-dataset model-training/data/public/validation.jsonl \
             --model-id distilgpt2 \
             --output model-artifacts/cram-ai \
-            --epochs 1 \
-            --max-length 192 \
+            --epochs 2 \
+            --max-length 256 \
             --resume
           cp model-training/data/public/dataset_metadata.json model-artifacts/cram-ai/dataset_metadata.json
 
@@ -80,10 +80,7 @@ jobs:
             --limit 400
           cat model-artifacts/evaluation.json
 
-      - name: Test the actual FastAPI model endpoint
-        run: python model-training/smoke_test_api.py
-
-      - name: Save verified adapter weights and evaluation to this branch
+      - name: Save trained artifacts and evaluation before quality gate
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -91,13 +88,16 @@ jobs:
           if git diff --cached --quiet; then
             echo "No model artifact changes to commit."
           else
-            git commit -m "Store verified CRAM AI model weights and evaluation"
+            git commit -m "Store CRAM AI retrained adapter and strict evaluation"
             git fetch origin "${GITHUB_REF_NAME}"
             git rebase "origin/${GITHUB_REF_NAME}"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
-      - name: Preserve model and logs as a downloadable workflow artifact
+      - name: Quality-gate the real FastAPI model endpoint
+        run: python model-training/smoke_test_api.py
+
+      - name: Preserve model, evaluation, and API logs as a downloadable workflow artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
