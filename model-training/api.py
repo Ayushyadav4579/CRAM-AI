@@ -82,27 +82,59 @@ def health():
 def model_info():
     return {"name":"CRAM AI","model_loaded":model is not None,"metadata":meta,"load_error":load_error,"model_dir":str(MODEL_DIR)}
 
+def suspicious_generic_output(prompt:str,response:str)->bool:
+    """Reject flashcard-shaped JSON when the caller asked a normal question."""
+    try:
+        parsed=json.loads(response)
+    except (ValueError,TypeError):
+        return False
+    if not isinstance(parsed,dict):
+        return False
+    front,back=parsed.get("front"),parsed.get("back")
+    if isinstance(front,str) and isinstance(back,str):
+        if front.strip().casefold()==back.strip().casefold():
+            return True
+        asks_for_structure=any(word in prompt.casefold() for word in ("flashcard","json","front and back"))
+        if not asks_for_structure:
+            return True
+    return False
+
+def validated_payload(response:str,kind:str)->dict[str,Any]:
+    payload=result_payload(response,kind)
+    if not payload["output_valid"]:
+        raise HTTPException(status_code=502,detail={
+            "error":"invalid_model_output",
+            "output_format":kind,
+            "message":"CRAM AI did not produce the required format. No hosted fallback is configured."
+        })
+    return payload
+
 @app.post("/generate")
 def generate(r:GenerateRequest):
     answer=gen(r.prompt,r.max_new_tokens,r.temperature)
-    return {"response":answer,"model":"CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":bool(answer)}
+    if not answer.strip() or suspicious_generic_output(r.prompt,answer):
+        raise HTTPException(status_code=502,detail={
+            "error":"invalid_model_output",
+            "message":"CRAM AI returned empty or flashcard-shaped output instead of answering the prompt. No hosted fallback is configured."
+        })
+    return {"response":answer,"model":"CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":True}
 
 @app.post("/study/notes")
 def notes(r:StudyRequest):
     answer=gen(f"Write clear exam-ready notes for grade {r.grade} {r.subject}. Use only this source material; organize key points and preserve formulas and definitions.\nSource material:\n{r.text}",384)
-    return result_payload(answer,"notes")
+    return validated_payload(answer,"notes")
 
 @app.post("/study/mcq")
 def mcq(r:StudyRequest):
     answer=gen(f"Create {r.count} school-level {r.subject} MCQs for grade {r.grade} from the source below. Every question must have exactly four options labelled A, B, C, D, one correct answer letter, and a brief explanation. Do not invent facts. If source evidence is insufficient, say so.\nSource material:\n{r.text}",384)
-    return result_payload(answer,"mcq")
+    return validated_payload(answer,"mcq")
 
 @app.post("/study/flashcards")
 def flashcards(r:StudyRequest):
     answer=gen(f"Create one concise revision flashcard for grade {r.grade} {r.subject} from the source below. Return only a JSON object with string keys front and back, both non-empty and different.\nSource material:\n{r.text}",160)
-    return result_payload(answer,"flashcards")
+    return validated_payload(answer,"flashcards")
 
 @app.post("/study/summary")
 def summary(r:StudyRequest):
     answer=gen(f"Write a concise revision summary for grade {r.grade} {r.subject}. Preserve key facts and qualifications; use only this source material.\nSource material:\n{r.text}",256)
-    return result_payload(answer,"summary")
+    return validated_payload(answer,"summary")
