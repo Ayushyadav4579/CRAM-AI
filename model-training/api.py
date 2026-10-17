@@ -67,9 +67,9 @@ def result_payload(response:str,kind:str)->dict[str,Any]:
         except (ValueError,TypeError):
             payload["output_valid"]=False
     elif kind=="mcq":
-        question_count=len(re.findall(r"(?im)^\\s*(?:q(?:uestion)?\\s*\\d*[:.)-]|\\d+[.)])\\s*\\S",response))
-        option_count=len(re.findall(r"(?im)^\\s*[A-D][.)]\\s+\\S",response))
-        answer_count=len(re.findall(r"(?im)^\\s*(?:correct answer|answer)\\s*[:\\-]\\s*[A-D]\\b",response))
+        question_count=len(re.findall(r"(?im)^\s*(?:q(?:uestion)?\s*\d*[:.)-]|\d+[.)])\s*\S",response))
+        option_count=len(re.findall(r"(?im)^\s*[A-D][.)]\s+\S",response))
+        answer_count=len(re.findall(r"(?im)^\s*(?:correct answer|answer)\s*[:\-]\s*[A-D]\b",response))
         payload["output_valid"]=bool(question_count and option_count>=4 and answer_count)
     return payload
 
