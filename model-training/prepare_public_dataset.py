@@ -71,7 +71,7 @@ def main():
         for row in rows:
             m=re.search(r"Question:\s*(.*?)\nOptions:\n(.*)",row["instruction"],re.S)
             if m:
-                normalized=re.sub(r"\\W+"," ",(m.group(1)+" "+m.group(2)).lower()).strip()
+                normalized=re.sub(r"\W+"," ",(m.group(1)+" "+m.group(2)).lower()).strip()
                 values.add(digest(normalized))
         return values
     train_q=question_fingerprints(train); val_q=question_fingerprints(validation); test_q=question_fingerprints(test)
