@@ -94,20 +94,30 @@ def model_info():
     return {"name":"CRAM AI","model_loaded":model is not None,"metadata":meta,"load_error":load_error,"model_dir":str(MODEL_DIR)}
 
 def suspicious_generic_output(prompt:str,response:str)->bool:
-    """Reject flashcard-shaped JSON when the caller asked a normal question."""
+    """Reject malformed JSON, repetitive fragments, and punctuation-heavy gibberish."""
+    text=response.strip()
+    if not text:
+        return True
     try:
-        parsed=json.loads(response)
+        parsed=json.loads(text)
     except (ValueError,TypeError):
-        return False
-    if not isinstance(parsed,dict):
-        return False
-    front,back=parsed.get("front"),parsed.get("back")
-    if isinstance(front,str) and isinstance(back,str):
-        if front.strip().casefold()==back.strip().casefold():
-            return True
-        asks_for_structure=any(word in prompt.casefold() for word in ("flashcard","json","front and back"))
-        if not asks_for_structure:
-            return True
+        parsed=None
+    if isinstance(parsed,dict):
+        front,back=parsed.get("front"),parsed.get("back")
+        if isinstance(front,str) and isinstance(back,str):
+            if front.strip().casefold()==back.strip().casefold():
+                return True
+            asks_for_structure=any(word in prompt.casefold() for word in ("flashcard","json","front and back"))
+            if not asks_for_structure:
+                return True
+    words=re.findall(r"[A-Za-z]{2,}",text.casefold())
+    punctuation=sum(1 for ch in text if not ch.isalnum() and not ch.isspace())/max(1,len(text))
+    if len(text)>12 and len(words)<2:
+        return True
+    if len(words)>=4 and len(set(words))/len(words)<0.45:
+        return True
+    if punctuation>0.25:
+        return True
     return False
 
 def validated_payload(response:str,kind:str)->dict[str,Any]:
@@ -122,11 +132,11 @@ def validated_payload(response:str,kind:str)->dict[str,Any]:
 
 @app.post("/generate")
 def generate(r:GenerateRequest):
-    direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\\nQuestion: "+r.prompt)
+    direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\nQuestion: "+r.prompt)
     answer=gen(direct_prompt,min(r.max_new_tokens,64),r.temperature)
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         # One bounded retry with a stronger plain-text instruction; never substitute a fake answer.
-        retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\\nQuestion: "+r.prompt)
+        retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\nQuestion: "+r.prompt)
         answer=gen(retry_prompt,min(r.max_new_tokens,32),0.0)
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         raise HTTPException(status_code=502,detail={

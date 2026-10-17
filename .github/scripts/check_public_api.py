@@ -33,7 +33,7 @@ report["checks"].append({"name":"health", "status":health_status, "body":health}
 info_status, info = call("/model-info", timeout=45)
 report["checks"].append({"name":"model-info", "status":info_status, "body":info})
 
-gen_status, gen = call("/generate", {"prompt":"What is photosynthesis? Answer in two clear sentences.", "max_new_tokens":64, "temperature":0}, timeout=180)
+gen_status, gen = call("/generate", {"prompt":"What is photosynthesis? Answer in two clear sentences.", "max_new_tokens":32, "temperature":0}, timeout=180)
 report["checks"].append({"name":"generate", "status":gen_status, "body":gen})
 
 invalid_status, invalid = call("/generate", {"prompt":""}, timeout=30)
@@ -43,9 +43,12 @@ report["checks"].append({"name":"invalid-input", "status":invalid_status, "body"
 health_body = health if isinstance(health, dict) else {}
 gen_body = gen if isinstance(gen, dict) else {}
 ready = health_status == 200 and health_body.get("model_loaded") is True
-generation_ok = gen_status == 200 and gen_body.get("model_loaded") is True and bool(str(gen_body.get("response","")).strip()) and gen_body.get("output_valid") is True
+generated_text = str(gen_body.get("response","")).strip()
+generated_lower = generated_text.casefold()
+expected_concept = ("photosynthesis" in generated_lower) or ("plant" in generated_lower and ("sunlight" in generated_lower or "light" in generated_lower))
+generation_ok = gen_status == 200 and gen_body.get("model_loaded") is True and bool(generated_text) and gen_body.get("output_valid") is True and expected_concept
 invalid_rejected = invalid_status in (400, 422)
-report["summary"] = {"model_loaded":ready, "generation_endpoint_works":generation_ok, "invalid_input_rejected":invalid_rejected}
+report["summary"] = {"model_loaded":ready, "generation_endpoint_works":generation_ok, "generation_contains_expected_concept":expected_concept, "invalid_input_rejected":invalid_rejected}
 OUT.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 print(json.dumps(report, indent=2, ensure_ascii=False))
 if not ready or not generation_ok or not invalid_rejected:
