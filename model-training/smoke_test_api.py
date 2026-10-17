@@ -35,7 +35,7 @@ def main():
                 answer=str(result.get("response","")).strip()
                 low=answer.casefold()
                 looks_like_echo=not answer or low in prompt.casefold() or low.startswith('{"front"') or "### instruction:" in low
-                relevant=any(term in low for term in expected_terms)
+                relevant=(bool(__import__("re").search(r"^\\s*(?:answer\\s*[:\\-]?\\s*)?B(?:[.)\\s:\\-]|$)",answer,__import__("re").I)) or "carbon dioxide" in low) if "Answer this MCQ" in prompt else any(term in low for term in expected_terms)
                 outputs.append({"prompt":prompt,"http_status":status,"response":answer,"looks_like_echo_or_malformed":looks_like_echo,"contains_expected_concept":relevant})
                 if status!=200 or looks_like_echo or not relevant:
                     raise SystemExit("Model output quality smoke test failed: "+json.dumps(outputs,ensure_ascii=False))
