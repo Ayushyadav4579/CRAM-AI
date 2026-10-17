@@ -69,7 +69,7 @@ def main():
     def question_fingerprints(rows):
         values=set()
         for row in rows:
-            m=re.search(r"Question:\\s*(.*?)\\nOptions:\\n(.*)",row["instruction"],re.S)
+            m=re.search(r"Question:\s*(.*?)\nOptions:\n(.*)",row["instruction"],re.S)
             if m:
                 normalized=re.sub(r"\\W+"," ",(m.group(1)+" "+m.group(2)).lower()).strip()
                 values.add(digest(normalized))
