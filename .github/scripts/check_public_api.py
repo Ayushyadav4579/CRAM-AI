@@ -39,7 +39,7 @@ report["checks"].append({"name":"generate", "status":gen_status, "body":gen})
 invalid_status, invalid = call("/generate", {"prompt":""}, timeout=30)
 report["checks"].append({"name":"invalid-input", "status":invalid_status, "body":invalid})
 
-# Test model identity/readiness and ensure invalid requests are rejected.
+# Test model identity, concept relevance, and invalid-input rejection; non-empty text alone is not a quality pass.
 health_body = health if isinstance(health, dict) else {}
 gen_body = gen if isinstance(gen, dict) else {}
 ready = health_status == 200 and health_body.get("model_loaded") is True
