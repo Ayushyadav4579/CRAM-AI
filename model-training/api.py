@@ -104,6 +104,7 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
     text=response.strip()
     if not text:
         return True
+    asks_for_structure=any(word in prompt.casefold() for word in ("flashcard","json","front and back"))
     try:
         parsed=json.loads(text)
     except (ValueError,TypeError):
@@ -113,9 +114,10 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
         if isinstance(front,str) and isinstance(back,str):
             if front.strip().casefold()==back.strip().casefold():
                 return True
-            asks_for_structure=any(word in prompt.casefold() for word in ("flashcard","json","front and back"))
             if not asks_for_structure:
                 return True
+    if not asks_for_structure and (text.lstrip().startswith(("{","[")) or re.search(r'"(?:front|back)"\\s*:',text,re.I)):
+        return True
     normalized_prompt=" ".join(re.findall(r"[a-z0-9]+",prompt.casefold()))
     normalized_response=" ".join(re.findall(r"[a-z0-9]+",text.casefold()))
     normalized_response=re.sub(r"^(?:answer|response)\s+", "", normalized_response)
