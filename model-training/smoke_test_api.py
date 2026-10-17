@@ -9,7 +9,7 @@ def request(url,data=None,timeout=120):
 
 def main():
     root=Path(__file__).resolve().parent
-    model_dir=(root.parent/"model-artifacts"/"cram-ai").resolve()
+    model_dir=Path(os.environ.get("MODEL_DIR",str(root.parent/"model-artifacts"/"cram-ai"))).resolve()
     env=os.environ.copy(); env["MODEL_DIR"]=str(model_dir)
     log_path=root.parent/"model-artifacts"/"api-smoke.log"
     log_path.parent.mkdir(parents=True,exist_ok=True)

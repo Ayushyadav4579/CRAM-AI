@@ -32,7 +32,11 @@ try:
         from peft import PeftModel
         meta=json.loads((MODEL_DIR/"training_metadata.json").read_text(encoding="utf-8"))
         tokenizer=AutoTokenizer.from_pretrained(MODEL_DIR)
-        base=AutoModelForCausalLM.from_pretrained(meta["base_model"])
+        if meta.get("model_type")=="llama":
+            # SmolLM2 is served in FP16 to fit the free CPU instance's memory limit.
+            base=AutoModelForCausalLM.from_pretrained(meta["base_model"],torch_dtype=__import__("torch").float16)
+        else:
+            base=AutoModelForCausalLM.from_pretrained(meta["base_model"])
         model=PeftModel.from_pretrained(base,MODEL_DIR)
         model.eval()
 except Exception as e:
@@ -42,7 +46,9 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The saved CRAM AI adapter is not loadable on this server. No hosted fallback is configured.","model_dir":str(MODEL_DIR),"load_error":load_error})
     prompt=prompt.strip()
-    if "### Response:" not in prompt:
+    if getattr(tokenizer,"chat_template",None):
+        prompt=tokenizer.apply_chat_template([{"role":"user","content":prompt}],tokenize=False,add_generation_prompt=True)
+    elif "### Response:" not in prompt:
         prompt=f"### Instruction:\n{prompt}\n### Response:\n"
     import torch
     inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=512)

@@ -44,10 +44,27 @@ def main():
     if not targets: raise SystemExit(f"Unsupported model_type={model_type}; refusing to guess LoRA target modules.")
     model=get_peft_model(base,LoraConfig(task_type=TaskType.CAUSAL_LM,r=8,lora_alpha=16,lora_dropout=0.05,target_modules=targets))
     def encode(row):
-        prompt=f"### Instruction:\n{row['instruction'].strip()}\n### Response:\n"
-        answer=row["response"].strip()+tokenizer.eos_token
-        prompt_ids=tokenizer(prompt,add_special_tokens=False)["input_ids"]
-        answer_ids=tokenizer(answer,add_special_tokens=False)["input_ids"][:max(8,a.max_length//3)]
+        instruction=row["instruction"].strip()
+        response=row["response"].strip()
+        if getattr(tokenizer,"chat_template",None):
+            user_messages=[{"role":"user","content":instruction}]
+            prefix=tokenizer.apply_chat_template(user_messages,tokenize=False,add_generation_prompt=True)
+            full=tokenizer.apply_chat_template(user_messages+[{"role":"assistant","content":response}],tokenize=False,add_generation_prompt=False)
+            prefix_ids=tokenizer(prefix,add_special_tokens=False)["input_ids"]
+            full_ids=tokenizer(full,add_special_tokens=False)["input_ids"]
+            boundary=0
+            for left,right in zip(prefix_ids,full_ids):
+                if left!=right: break
+                boundary+=1
+            prompt_ids=full_ids[:boundary]
+            answer_ids=full_ids[boundary:][:max(8,a.max_length//3)]
+        else:
+            prompt=f"### Instruction:\n{instruction}\n### Response:\n"
+            answer=response+tokenizer.eos_token
+            prompt_ids=tokenizer(prompt,add_special_tokens=False)["input_ids"]
+            answer_ids=tokenizer(answer,add_special_tokens=False)["input_ids"][:max(8,a.max_length//3)]
+        if not answer_ids:
+            raise ValueError("Tokenization produced an empty assistant target.")
         prompt_ids=prompt_ids[-max(1,a.max_length-len(answer_ids)):]
         ids=prompt_ids+answer_ids
         labels=([-100]*len(prompt_ids))+answer_ids

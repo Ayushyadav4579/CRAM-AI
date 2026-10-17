@@ -38,7 +38,10 @@ def main():
     rows=[json.loads(x) for x in data.read_text(encoding="utf-8").splitlines() if x.strip()][:a.limit]
     results=[]
     for i,r in enumerate(rows,1):
-        prompt=f"### Instruction:\n{r['instruction']}\n### Response:\n"
+        if getattr(tokenizer,"chat_template",None):
+            prompt=tokenizer.apply_chat_template([{"role":"user","content":r["instruction"]}],tokenize=False,add_generation_prompt=True)
+        else:
+            prompt=f"### Instruction:\n{r['instruction']}\n### Response:\n"
         inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=512)
         with torch.no_grad():
             out=model.generate(**inputs,max_new_tokens=96,do_sample=False,pad_token_id=tokenizer.eos_token_id,
@@ -48,11 +51,12 @@ def main():
         predicted_key=parsed_key(answer)
         key_correct=(predicted_key==expected_key) if expected_key else None
         expected=str(r.get("expected_answer","")).strip()
-        exact=bool(expected and norm(expected)==norm(answer))
-        f1=round(token_f1(expected,answer),4) if expected else None
+        answer_text=re.sub(r"^\\s*(?:(?:answer|correct\\s+option|option)\\s*[:\\-]?\\s*)?[A-D](?:\\s*[.)\\-:]|\\s)+","",answer,flags=re.I).strip()
+        exact=bool(expected and norm(expected)==norm(answer_text))
+        f1=round(token_f1(expected,answer_text),4) if expected else None
         results.append({"task":r.get("task","unknown"),"source_id":r.get("source_id"),
             "expected_key":expected_key or None,"predicted_key":predicted_key,"expected_answer":expected,
-            "predicted":answer[:400],"mcq_key_correct":key_correct,"answer_text_exact":exact if expected else None,
+            "predicted":answer[:400],"predicted_answer_text":answer_text[:400],"mcq_key_correct":key_correct,"answer_text_exact":exact if expected else None,
             "answer_token_f1":f1,"nonempty":bool(answer)})
         if i%25==0: print(json.dumps({"event":"evaluation_progress","completed":i,"total":len(rows)}),flush=True)
     tasks={}

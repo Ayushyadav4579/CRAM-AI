@@ -1,9 +1,10 @@
-name: CRAM AI model training (free CPU runner)
+name: CRAM AI SmolLM2 experiment (free CPU runner)
 
 on:
   push:
     branches:
       - agent/cram-ai-model-pipeline
+      - agent/cram-ai-smollm-experiment
     paths:
       - "model-training/**"
   workflow_dispatch:
@@ -54,47 +55,49 @@ jobs:
       - name: Restore resumable checkpoints
         uses: actions/cache@v4
         with:
-          path: model-artifacts/cram-ai.staging/checkpoints
-          key: cram-ai-checkpoints-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: model-artifacts/cram-ai-smollm.staging/checkpoints
+          key: cram-ai-smollm-checkpoints-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            cram-ai-checkpoints-${{ github.ref_name }}-
+            cram-ai-smollm-checkpoints-${{ github.ref_name }}-
 
-      - name: Fine-tune DistilGPT2 on CPU without paid APIs
+      - name: Fine-tune SmolLM2-135M-Instruct on CPU without paid APIs
         run: |
           python model-training/train.py \
             --dataset model-training/data/public/train.jsonl \
             --eval-dataset model-training/data/public/validation.jsonl \
-            --model-id distilgpt2 \
-            --output model-artifacts/cram-ai \
-            --epochs 2 \
+            --model-id HuggingFaceTB/SmolLM2-135M-Instruct \
+            --output model-artifacts/cram-ai-smollm \
+            --epochs 1 \
             --max-length 256 \
             --resume
-          cp model-training/data/public/dataset_metadata.json model-artifacts/cram-ai/dataset_metadata.json
+          cp model-training/data/public/dataset_metadata.json model-artifacts/cram-ai-smollm/dataset_metadata.json
 
       - name: Evaluate on untouched test questions
         run: |
           python model-training/evaluate.py \
-            --model model-artifacts/cram-ai \
+            --model model-artifacts/cram-ai-smollm \
             --dataset model-training/data/public/test.jsonl \
-            --report model-artifacts/evaluation.json \
+            --report model-artifacts/evaluation-smollm.json \
             --limit 400
-          cat model-artifacts/evaluation.json
+          cat model-artifacts/evaluation-smollm.json
 
       - name: Save trained artifacts and evaluation before quality gate
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add model-artifacts/cram-ai model-artifacts/evaluation.json
+          git add model-artifacts/cram-ai-smollm model-artifacts/evaluation-smollm.json
           if git diff --cached --quiet; then
             echo "No model artifact changes to commit."
           else
-            git commit -m "Store CRAM AI retrained adapter and strict evaluation"
+            git commit -m "Store CRAM AI SmolLM2 experiment and strict evaluation"
             git fetch origin "${GITHUB_REF_NAME}"
             git rebase "origin/${GITHUB_REF_NAME}"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
       - name: Quality-gate the real FastAPI model endpoint
+        env:
+          MODEL_DIR: model-artifacts/cram-ai-smollm
         run: python model-training/smoke_test_api.py
 
       - name: Preserve model, evaluation, and API logs as a downloadable workflow artifact
@@ -103,8 +106,8 @@ jobs:
         with:
           name: cram-ai-training-run-${{ github.run_id }}
           path: |
-            model-artifacts/cram-ai/
-            model-artifacts/evaluation.json
+            model-artifacts/cram-ai-smollm/
+            model-artifacts/evaluation-smollm.json
             model-artifacts/api-smoke.log
             model-training/data/public/dataset_metadata.json
           if-no-files-found: warn
