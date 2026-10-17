@@ -116,7 +116,7 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
                 return True
             if not asks_for_structure:
                 return True
-    if not asks_for_structure and (text.lstrip().startswith(("{","[")) or re.search(r'"(?:front|back)"\\s*:',text,re.I)):
+    if not asks_for_structure and (text.lstrip().startswith(("{","[")) or re.search(r'"(?:front|back)"\s*:',text,re.I)):
         return True
     normalized_prompt=" ".join(re.findall(r"[a-z0-9]+",prompt.casefold()))
     normalized_response=" ".join(re.findall(r"[a-z0-9]+",text.casefold()))
