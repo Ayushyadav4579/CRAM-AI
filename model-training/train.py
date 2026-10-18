@@ -98,7 +98,7 @@ def main():
     trainer.save_model(str(staging/"adapter")); tokenizer.save_pretrained(str(staging/"adapter"))
     weights=list((staging/"adapter").glob("*.safetensors"))+list((staging/"adapter").glob("*.bin"))
     if not weights or not (staging/"adapter"/"tokenizer.json").exists(): raise SystemExit("Post-train verification failed: weights or tokenizer missing.")
-    report={"base_model":a.model_id,"model_type":model_type,"training_rows":len(train),"validation_rows":len(ev),"device":device,"torch":torch.__version__,"train_metrics":result.metrics,"log_history":trainer.state.log_history,"weight_sha256":{f.name:sha256(f) for f in weights}}
+    report={"base_model":a.model_id,"model_type":model_type,"prompt_format":"chat_template" if getattr(tokenizer,"chat_template",None) else "instruction_response","training_rows":len(train),"validation_rows":len(ev),"device":device,"torch":torch.__version__,"train_metrics":result.metrics,"log_history":trainer.state.log_history,"weight_sha256":{f.name:sha256(f) for f in weights}}
     (staging/"training_metadata.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
     backup=out.with_name(out.name+".previous")
     if backup.exists(): shutil.rmtree(backup)
