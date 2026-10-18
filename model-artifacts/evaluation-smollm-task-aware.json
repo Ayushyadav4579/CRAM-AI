@@ -1,0 +1,36 @@
+{
+  "report_type": "task-aware-rescore-of-saved-generations",
+  "base_model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "held_out_examples": 800,
+  "mcq_questions": 200,
+  "scoring_note": "This rescore uses the exact same 800 held-out generations from evaluation-smollm.json. MCQ success requires both the expected answer key and exact normalized answer text. Short answers are scored after stripping a leading option key. Flashcard correctness is scored from the JSON back field after stripping a leading option key. Revision correctness is scored from the Answer line. Format validity is reported separately from factual correctness. No test examples or scoring rules were changed to inflate accuracy.",
+  "tasks": {
+    "mcq": {
+      "examples": 200,
+      "format_validity": 0.965,
+      "key_accuracy": 0.295,
+      "answer_text_exact_match": 0.28,
+      "joint_key_and_answer_exact_match": 0.28,
+      "mean_answer_token_f1": 0.4589
+    },
+    "short_answer": {
+      "examples": 200,
+      "format_validity": 1.0,
+      "answer_exact_match": 0.19,
+      "mean_answer_token_f1": 0.3779
+    },
+    "flashcard": {
+      "examples": 200,
+      "format_validity": 0.985,
+      "answer_exact_match": 0.24,
+      "mean_answer_token_f1": 0.4261
+    },
+    "revision": {
+      "examples": 200,
+      "format_validity": 0.99,
+      "answer_exact_match": 0.255,
+      "mean_answer_token_f1": 0.4319
+    }
+  },
+  "conclusion": "Not production-ready for factual study answers. Formatting is mostly valid, but factual answer accuracy is poor and far below the near-perfect target."
+}
