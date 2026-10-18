@@ -34,7 +34,7 @@ if USE_GGUF:
         if not GGUF_PATH.is_file():
             raise FileNotFoundError(f"Configured GGUF model does not exist: {GGUF_PATH}")
         from llama_cpp import Llama
-        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","1024")),n_threads=int(os.getenv("MODEL_THREADS","2")),n_batch=128,verbose=False)
+        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","1024")),n_threads=int(os.getenv("MODEL_THREADS","2")),n_batch=128,chat_format="chatml",verbose=False)
         metadata_path=HERE.parent/"model-artifacts"/"cram-ai-smollm"/"training_metadata.json"
         meta=json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
         meta.update({"base_model":meta.get("base_model","HuggingFaceTB/SmolLM2-135M-Instruct"),"model_type":"llama","prompt_format":"chat_template","artifact_format":"GGUF Q4_0"})
@@ -65,7 +65,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     prompt=prompt.strip()
     if USE_GGUF:
         try:
-            result=gguf_model.create_chat_completion(messages=[{"role":"user","content":prompt}],max_tokens=limit,temperature=temperature,top_p=0.9,repeat_penalty=1.08)
+            result=gguf_model.create_chat_completion(messages=[{"role":"user","content":prompt}],max_tokens=limit,temperature=temperature,top_p=0.9,repeat_penalty=1.08,stop=["<|im_end|>"])
             answer=str(result["choices"][0]["message"].get("content","")).strip()
             if not answer:
                 raise ValueError("GGUF model returned an empty completion.")
