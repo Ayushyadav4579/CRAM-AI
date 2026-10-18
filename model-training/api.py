@@ -46,7 +46,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The saved CRAM AI adapter is not loadable on this server. No hosted fallback is configured.","model_dir":str(MODEL_DIR),"load_error":load_error})
     prompt=prompt.strip()
-    prompt_format=meta.get("prompt_format","instruction_response") if meta else "instruction_response"
+    prompt_format=meta.get("prompt_format","chat_template" if meta and meta.get("model_type")=="llama" else "instruction_response") if meta else "instruction_response"
     if prompt_format=="chat_template" and getattr(tokenizer,"chat_template",None):
         prompt=tokenizer.apply_chat_template([{"role":"user","content":prompt}],tokenize=False,add_generation_prompt=True)
     elif "### Response:" not in prompt:
