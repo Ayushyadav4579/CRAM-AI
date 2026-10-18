@@ -47,7 +47,7 @@ generated_text = str(gen_body.get("response","")).strip()
 generated_lower = generated_text.casefold()
 expected_concept = ("photosynthesis" in generated_lower) or ("plant" in generated_lower and ("sunlight" in generated_lower or "light" in generated_lower))
 normalized_generated = re.sub(r"[^a-z0-9]+", " ", generated_lower).strip()
-normalized_without_label = re.sub(r"^(?:answer|response)\\s+", "", normalized_generated)
+normalized_without_label = re.sub(r"^(?:answer|response)\s+", "", normalized_generated)
 echo_like = normalized_without_label.startswith("what is photosynthesis")
 generation_ok = gen_status == 200 and gen_body.get("model_loaded") is True and bool(generated_text) and gen_body.get("output_valid") is True and expected_concept and not echo_like
 invalid_rejected = invalid_status in (400, 422)
