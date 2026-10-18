@@ -133,8 +133,10 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
     if len(question_core.split())>=3 and normalized_response.startswith(question_core):
         return True
     words=re.findall(r"[A-Za-z]{2,}",text.casefold())
-    # Reject short, unfinished fragments such as a truncated "Answer: What".
-    if len(words)<3 and not text.rstrip().endswith((".", "?", "!")):
+    # Reject truncated fragments and unmatched quotes instead of returning false success.
+    if text.count('"') % 2:
+        return True
+    if len(words)<6 and not text.rstrip().endswith((".", "?", "!")):
         return True
     punctuation=sum(1 for ch in text if not ch.isalnum() and not ch.isspace())/max(1,len(text))
     if len(text)>12 and len(words)<2:
