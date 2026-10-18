@@ -6,7 +6,12 @@ on:
       - agent/cram-ai-model-pipeline
       - agent/cram-ai-smollm-experiment
     paths:
-      - "model-training/**"
+      # Avoid spending an hour retraining for API, evaluator, test, or documentation changes.
+      - "model-training/train.py"
+      - "model-training/prepare_public_dataset.py"
+      - "model-training/dataset_pipeline.py"
+      - "model-training/requirements.txt"
+      - "model-training/data/**"
   workflow_dispatch:
 
 permissions:
@@ -91,7 +96,19 @@ jobs:
           else
             git commit -m "Store CRAM AI SmolLM2 experiment and strict evaluation"
             git fetch origin "${GITHUB_REF_NAME}"
-            git rebase "origin/${GITHUB_REF_NAME}"
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              conflicted="$(git diff --name-only --diff-filter=U)"
+              if [ -z "$conflicted" ] || printf '%s\n' "$conflicted" | grep -Ev '^(model-artifacts/cram-ai-smollm(/|$)|model-artifacts/evaluation-smollm\.json$)' | grep -q .; then
+                echo "Unsafe rebase conflict outside the SmolLM artifacts:"
+                printf '%s\n' "$conflicted"
+                git rebase --abort
+                exit 1
+              fi
+              # Keep the fresh training output only for model artifacts; preserve current source code.
+              git checkout --theirs -- model-artifacts/cram-ai-smollm model-artifacts/evaluation-smollm.json
+              git add model-artifacts/cram-ai-smollm model-artifacts/evaluation-smollm.json
+              GIT_EDITOR=true git rebase --continue
+            fi
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
