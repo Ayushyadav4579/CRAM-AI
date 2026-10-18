@@ -1,0 +1,113 @@
+name: Export trained SmolLM2 adapter to a compact GGUF model
+
+on:
+  push:
+    branches: [agent/cram-ai-model-pipeline]
+    paths:
+      - ".github/workflows/export-smollm-gguf.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cram-ai-smollm-gguf-export
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out CRAM AI and saved adapter
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU model conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers peft accelerate sentencepiece gguf safetensors
+
+      - name: Merge saved LoRA adapter into the open-weight base model
+        run: |
+          python - <<'PY'
+          import torch, json
+          from pathlib import Path
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          from peft import PeftModel
+
+          adapter_dir = Path("model-artifacts/cram-ai-smollm")
+          metadata = json.loads((adapter_dir / "training_metadata.json").read_text())
+          base_id = metadata["base_model"]
+          print("Merging trained adapter into:", base_id)
+          base = AutoModelForCausalLM.from_pretrained(
+              base_id, torch_dtype=torch.float16, low_cpu_mem_usage=True
+          )
+          tuned = PeftModel.from_pretrained(base, adapter_dir)
+          merged = tuned.merge_and_unload()
+          out = Path("/tmp/cram-ai-smollm-merged")
+          out.mkdir(parents=True, exist_ok=True)
+          merged.save_pretrained(out, safe_serialization=True, max_shard_size="2GB")
+          AutoTokenizer.from_pretrained(adapter_dir).save_pretrained(out)
+          print("Merged model files:", [p.name for p in out.iterdir()])
+          PY
+
+      - name: Build llama.cpp converter and quantizer
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
+          cmake --build /tmp/llama.cpp/build --config Release -j2 --target llama-quantize llama-cli
+
+      - name: Convert merged weights and quantize for low-memory CPU serving
+        run: |
+          python /tmp/llama.cpp/convert_hf_to_gguf.py /tmp/cram-ai-smollm-merged --outfile /tmp/cram-ai-smollm-f16.gguf --outtype f16
+          /tmp/llama.cpp/build/bin/llama-quantize /tmp/cram-ai-smollm-f16.gguf /tmp/cram-ai-smollm-q4_k_m.gguf Q4_K_M
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("/tmp/cram-ai-smollm-q4_k_m.gguf")
+          size = p.stat().st_size
+          print(f"Quantized model size: {size:,} bytes ({size / 1024 / 1024:.1f} MiB)")
+          if size >= 99 * 1024 * 1024:
+              raise SystemExit("GGUF is too large for a single GitHub file; do not commit it.")
+          PY
+
+      - name: Smoke-test the quantized trained model
+        run: |
+          set -o pipefail
+          /tmp/llama.cpp/build/bin/llama-cli \
+            -m /tmp/cram-ai-smollm-q4_k_m.gguf \
+            -p $'<|im_start|>user\\nWhat is photosynthesis?\\n<|im_end|>\\n<|im_start|>assistant\\n' \
+            -n 64 -t 2 --temp 0 --no-display-prompt --simple-io | tee /tmp/cram-ai-gguf-smoke.txt
+          python - <<'PY'
+          from pathlib import Path
+          text = Path("/tmp/cram-ai-gguf-smoke.txt").read_text(errors="replace").casefold()
+          if not any(term in text for term in ("photosynth", "plant", "sunlight", "chlorophyll", "carbon dioxide")):
+              raise SystemExit("Quantized model failed the concept-relevance smoke test.")
+          print("GGUF concept smoke test passed.")
+          PY
+
+      - name: Preserve the quantized model and smoke output
+        uses: actions/upload-artifact@v4
+        with:
+          name: cram-ai-smollm-q4-gguf
+          path: |
+            /tmp/cram-ai-smollm-q4_k_m.gguf
+            /tmp/cram-ai-gguf-smoke.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Commit the reproducible low-memory model artifact
+        run: |
+          cp /tmp/cram-ai-smollm-q4_k_m.gguf model-artifacts/cram-ai-smollm-q4_k_m.gguf
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add model-artifacts/cram-ai-smollm-q4_k_m.gguf
+          git commit -m "Add quantized trained SmolLM2 model for low-memory inference"
+          git push origin HEAD:agent/cram-ai-model-pipeline
