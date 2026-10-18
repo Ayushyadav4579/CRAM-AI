@@ -6,5 +6,6 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
  && pip install --no-cache-dir -r /app/requirements-api.txt
 COPY model-training /app/model-training
 COPY model-artifacts/cram-ai /app/model-artifacts/cram-ai
+COPY model-artifacts/cram-ai-smollm /app/model-artifacts/cram-ai-smollm
 EXPOSE 8000
 CMD ["uvicorn","api:app","--app-dir","model-training","--host","0.0.0.0","--port","8000"]
