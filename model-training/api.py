@@ -54,7 +54,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     import torch
     inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=512)
     kwargs={"max_new_tokens":limit,"do_sample":temperature>0,"pad_token_id":tokenizer.eos_token_id,
-            "eos_token_id":tokenizer.eos_token_id,"repetition_penalty":1.08,"use_cache":True,"max_time":15}
+            "eos_token_id":tokenizer.eos_token_id,"repetition_penalty":1.08,"use_cache":True,"max_time":25}
     if temperature>0: kwargs["temperature"]=temperature
     with torch.inference_mode():
         out=model.generate(**inputs,**kwargs)
@@ -133,6 +133,9 @@ def suspicious_generic_output(prompt:str,response:str)->bool:
     if len(question_core.split())>=3 and normalized_response.startswith(question_core):
         return True
     words=re.findall(r"[A-Za-z]{2,}",text.casefold())
+    # Reject short, unfinished fragments such as a truncated "Answer: What".
+    if len(words)<3 and not text.rstrip().endswith((".", "?", "!")):
+        return True
     punctuation=sum(1 for ch in text if not ch.isalnum() and not ch.isspace())/max(1,len(text))
     if len(text)>12 and len(words)<2:
         return True
