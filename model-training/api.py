@@ -46,9 +46,9 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The saved CRAM AI adapter is not loadable on this server. No hosted fallback is configured.","model_dir":str(MODEL_DIR),"load_error":load_error})
     prompt=prompt.strip()
-    if getattr(tokenizer,"chat_template",None):
-        prompt=tokenizer.apply_chat_template([{"role":"user","content":prompt}],tokenize=False,add_generation_prompt=True)
-    elif "### Response:" not in prompt:
+    # Training used the explicit Instruction/Response template for both bases;
+    # keep inference identical rather than switching SmolLM2 to its chat template.
+    if "### Response:" not in prompt:
         prompt=f"### Instruction:\n{prompt}\n### Response:\n"
     import torch
     inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=512)
