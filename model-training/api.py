@@ -159,7 +159,7 @@ def generate(r:GenerateRequest):
     first_attempt=answer
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         # One bounded retry with a stronger plain-text instruction; never substitute a fake answer.
-        retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\\nQuestion: "+r.prompt)
+        retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\nQuestion: "+r.prompt)
         answer=gen(retry_prompt,min(r.max_new_tokens,24),0.0)
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         raise HTTPException(status_code=502,detail={
