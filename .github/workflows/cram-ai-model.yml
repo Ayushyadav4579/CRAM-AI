@@ -96,7 +96,20 @@ jobs:
           else
             git commit -m "Store CRAM AI retrained adapter and strict evaluation"
             git fetch origin "${GITHUB_REF_NAME}"
-            git rebase "origin/${GITHUB_REF_NAME}"
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              conflicted="$(git diff --name-only --diff-filter=U)"
+              if [ -z "$conflicted" ] || printf '%s\n' "$conflicted" | grep -Ev '^(model-artifacts/cram-ai(/|$)|model-artifacts/evaluation\.json$)' | grep -q .; then
+                echo "Unsafe rebase conflict outside the generated model artifacts:"
+                printf '%s\n' "$conflicted"
+                git rebase --abort
+                exit 1
+              fi
+              # The rebased commit contains the freshly trained artifacts; prefer them
+              # only for artifact paths while retaining the latest source-code changes.
+              git checkout --theirs -- model-artifacts/cram-ai model-artifacts/evaluation.json
+              git add model-artifacts/cram-ai model-artifacts/evaluation.json
+              GIT_EDITOR=true git rebase --continue
+            fi
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
