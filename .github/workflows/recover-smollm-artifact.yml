@@ -1,0 +1,109 @@
+name: Recover and evaluate saved SmolLM2 artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  recover-evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out experiment branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Download the completed training artifact from run 39013638611
+        uses: actions/download-artifact@v4
+        with:
+          name: cram-ai-training-run-39013638611
+          path: .
+          run-id: 39013638611
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify recovered model files
+        run: |
+          test -s model-artifacts/cram-ai-smollm/adapter_model.safetensors
+          test -s model-artifacts/cram-ai-smollm/adapter_config.json
+          test -s model-artifacts/cram-ai-smollm/training_metadata.json
+          test -s model-artifacts/cram-ai-smollm/TRAINING_FINISHED
+          cat model-artifacts/cram-ai-smollm/training_metadata.json | head -40
+
+      - name: Install evaluation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r model-training/requirements.txt pytest
+
+      - name: Compile and test evaluator
+        run: |
+          python -m compileall -q model-training
+          pytest -q model-training/tests
+
+      - name: Recreate deterministic held-out dataset
+        run: |
+          python model-training/prepare_public_dataset.py \
+            --output-dir model-training/data/public \
+            --max-train-questions 1000 \
+            --max-validation-questions 200 \
+            --max-test-questions 200
+          cat model-training/data/public/dataset_metadata.json
+
+      - name: Preserve recovered trained adapter before evaluation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add model-artifacts/cram-ai-smollm
+          if git diff --cached --quiet; then
+            echo "Recovered model already committed."
+          else
+            git commit -m "Recover trained SmolLM2 adapter from completed run"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Evaluate all held-out task examples
+        run: |
+          python model-training/evaluate.py \
+            --model model-artifacts/cram-ai-smollm \
+            --dataset model-training/data/public/test.jsonl \
+            --report model-artifacts/evaluation-smollm.json \
+            --limit 800
+          cat model-artifacts/evaluation-smollm.json
+
+      - name: Commit strict evaluation report
+        if: always()
+        run: |
+          if test -s model-artifacts/evaluation-smollm.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add model-artifacts/evaluation-smollm.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Save held-out SmolLM2 evaluation report"
+              git pull --rebase origin "${GITHUB_REF_NAME}"
+              git push origin "HEAD:${GITHUB_REF_NAME}"
+            fi
+          else
+            echo "Evaluation report was not produced; preserving recovered model only."
+          fi
+
+      - name: Run actual model API smoke test
+        if: success()
+        env:
+          MODEL_DIR: model-artifacts/cram-ai-smollm
+        run: python model-training/smoke_test_api.py
+
+      - name: Preserve recovered model, evaluation, and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cram-ai-smollm-recovered-evaluation-${{ github.run_id }}
+          path: |
+            model-artifacts/cram-ai-smollm/
+            model-artifacts/evaluation-smollm.json
+            model-artifacts/api-smoke.log
+            model-training/data/public/dataset_metadata.json
+          if-no-files-found: warn
+          retention-days: 90
