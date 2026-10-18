@@ -2,9 +2,9 @@ name: Export trained SmolLM2 adapter to a compact GGUF model
 
 on:
   push:
-    branches: [agent/cram-ai-model-pipeline]
+    branches: [agent/cram-ai-smollm-experiment]
     paths:
-      - ".github/workflows/export-smollm-gguf.yml"
+      - "model-artifacts/cram-ai-smollm/**"
   workflow_dispatch:
 
 permissions:
@@ -19,10 +19,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out CRAM AI and saved adapter
+      - name: Check out the deployment branch
         uses: actions/checkout@v4
         with:
           persist-credentials: true
+          ref: agent/cram-ai-model-pipeline
+
+      - name: Fetch the latest trained adapter from the experiment branch
+        run: |
+          git fetch origin agent/cram-ai-smollm-experiment
+          git checkout FETCH_HEAD -- model-artifacts/cram-ai-smollm
+          test -s model-artifacts/cram-ai-smollm/adapter_model.safetensors
+          test -s model-artifacts/cram-ai-smollm/training_metadata.json
 
       - name: Set up Python
         uses: actions/setup-python@v5
