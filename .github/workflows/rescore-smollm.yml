@@ -1,0 +1,35 @@
+name: Re-score held-out CRAM AI task metrics
+
+on:
+  push:
+    branches:
+      - agent/cram-ai-smollm-experiment
+    paths:
+      - "evaluation/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  rescore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Recompute task-aware metrics from the unchanged held-out generations
+        run: |
+          python evaluation/rescore_task_metrics.py \
+            --input model-artifacts/evaluation-smollm.json \
+            --output model-artifacts/evaluation-smollm-task-aware.json
+          cat model-artifacts/evaluation-smollm-task-aware.json
+      - name: Commit reproducible task-aware report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add model-artifacts/evaluation-smollm-task-aware.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Refresh reproducible task-aware SmolLM2 metrics"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
