@@ -1,0 +1,62 @@
+name: Verify public CRAM AI API
+
+on:
+  push:
+    branches:
+      - agent/cram-ai-model-pipeline
+    paths:
+      - ".github/workflows/public-api-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check public API health, source-grounded answering, invalid evidence, and real generation
+        env:
+          API_BASE: https://cram-ai-api.onrender.com
+        run: |
+          python - <<'PY'
+          import json, os, time, urllib.error, urllib.request
+          base = os.environ["API_BASE"].rstrip("/")
+          def request(path, payload=None, timeout=180):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(base + path, data=data, headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(req, timeout=timeout) as response:
+                  raw = response.read().decode()
+                  return response.status, json.loads(raw) if raw else {}
+          health = None
+          last_error = None
+          for attempt in range(6):
+              try:
+                  status, health = request("/health", timeout=180)
+                  if status == 200:
+                      break
+              except Exception as exc:
+                  last_error = repr(exc)
+                  time.sleep(min(10 * (attempt + 1), 45))
+          if not health or not health.get("model_loaded"):
+              raise SystemExit("Public API is not serving a loaded real model: " + json.dumps({"health":health,"last_error":last_error}))
+          print("HEALTH_OK", json.dumps(health))
+          source = "Photosynthesis is the process by which green plants use sunlight, carbon dioxide, and water to make glucose and oxygen."
+          status, answer = request("/study/answer", {"question":"What is photosynthesis?","text":source,"grade":10,"subject":"Science"})
+          if status != 200 or answer.get("answer_mode") != "extractive" or not answer.get("sources") or "photosynthesis" not in answer.get("response","").casefold():
+              raise SystemExit("Source-grounded answer failed: " + json.dumps({"status":status,"response":answer}))
+          print("SOURCE_ANSWER_OK", json.dumps(answer))
+          try:
+              request("/study/answer", {"question":"What is the capital of France?","text":source,"grade":10,"subject":"Science"})
+              raise SystemExit("Expected 422 for unsupported evidence, but API accepted the question.")
+          except urllib.error.HTTPError as exc:
+              detail = json.loads(exc.read().decode())
+              if exc.code != 422 or detail.get("detail",{}).get("error") != "insufficient_source_evidence":
+                  raise SystemExit("Unexpected invalid-evidence response: " + json.dumps({"status":exc.code,"detail":detail}))
+              print("INVALID_EVIDENCE_REJECTED", json.dumps({"status":exc.code,"detail":detail}))
+          status, generated = request("/generate", {"prompt":"In one short sentence, what is photosynthesis?","max_new_tokens":48,"temperature":0}, timeout=180)
+          if status != 200 or generated.get("model_loaded") is not True or generated.get("output_valid") is not True or not generated.get("response","").strip():
+              raise SystemExit("Real model generation failed: " + json.dumps({"status":status,"response":generated}))
+          print("REAL_GENERATION_OK", json.dumps(generated))
+          PY
