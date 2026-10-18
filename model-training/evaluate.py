@@ -7,7 +7,7 @@ def norm(s):
 
 def parsed_key(text):
     # Only accept an explicit answer label at the start of the generated answer.
-    m = re.match(r"^\s*(?:(?:answer|correct\s+option|option)\s*[:\-]?\s*)?([A-D])(?:\s*[.)\-:]|\s|$)", str(text), re.I)
+    m = re.match(r"^\s*(?:(?:answer|correct\s+option|option)\s*[:-]?\s*)?([A-D])(?:\s*[.)\-:]|\s|$)", str(text), re.I)
     return m.group(1).upper() if m else None
 
 def token_f1(expected, predicted):
@@ -51,7 +51,7 @@ def main():
         predicted_key=parsed_key(answer)
         key_correct=(predicted_key==expected_key) if expected_key else None
         expected=str(r.get("expected_answer","")).strip()
-        answer_text=re.sub(r"^\s*(?:(?:answer|correct\s+option|option)\s*[:\-]?\s*)?[A-D](?:\s*[.)\-:]|\s)+","",answer,flags=re.I).strip()
+        answer_text=re.sub(r"^\s*(?:(?:answer|correct\s+option|option)\s*[:-]?\s*)?[A-D](?:\s*[.)\-:]|\s)+","",answer,flags=re.I).strip()
         exact=bool(expected and norm(expected)==norm(answer_text))
         f1=round(token_f1(expected,answer_text),4) if expected else None
         results.append({"task":r.get("task","unknown"),"source_id":r.get("source_id"),
