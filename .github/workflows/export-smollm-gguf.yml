@@ -74,7 +74,7 @@ jobs:
           p = Path("/tmp/cram-ai-smollm-q4_0.gguf")
           size = p.stat().st_size
           print(f"Quantized model size: {size:,} bytes ({size / 1024 / 1024:.1f} MiB)")
-          if size >= 99 * 1024 * 1024:
+          if size >= 94 * 1024 * 1024:
               raise SystemExit("GGUF is too large for a single GitHub file; do not commit it.")
           PY
 
@@ -83,7 +83,7 @@ jobs:
           set -o pipefail
           /tmp/llama.cpp/build/bin/llama-cli \
             -m /tmp/cram-ai-smollm-q4_0.gguf \
-            -p $'<|im_start|>user\\nWhat is photosynthesis?\\n<|im_end|>\\n<|im_start|>assistant\\n' \
+            -p $'<|im_start|>user\nWhat is photosynthesis?\n<|im_end|>\n<|im_start|>assistant\n' \
             -n 64 -t 2 --temp 0 --no-display-prompt --simple-io | tee /tmp/cram-ai-gguf-smoke.txt
           python - <<'PY'
           from pathlib import Path
@@ -109,5 +109,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add model-artifacts/cram-ai-smollm-q4_0.gguf
+          if git diff --cached --quiet; then
+            echo "Quantized model artifact is already current."
+            exit 0
+          fi
           git commit -m "Add quantized trained SmolLM2 model for low-memory inference"
+          git fetch origin agent/cram-ai-model-pipeline
+          git rebase FETCH_HEAD
           git push origin HEAD:agent/cram-ai-model-pipeline
