@@ -34,7 +34,7 @@ try:
         tokenizer=AutoTokenizer.from_pretrained(MODEL_DIR)
         if meta.get("model_type")=="llama":
             # SmolLM2 is a compact instruction-tuned Llama-family model; FP16 reduces RAM on CPU hosting.
-            base=AutoModelForCausalLM.from_pretrained(meta["base_model"],torch_dtype=__import__("torch").float16)
+            base=AutoModelForCausalLM.from_pretrained(meta["base_model"],torch_dtype=__import__("torch").float16,low_cpu_mem_usage=True,local_files_only=os.getenv("HF_LOCAL_ONLY","0")=="1")
         else:
             base=AutoModelForCausalLM.from_pretrained(meta["base_model"])
         model=PeftModel.from_pretrained(base,MODEL_DIR)
