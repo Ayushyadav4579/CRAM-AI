@@ -53,7 +53,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     import torch
     inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=512)
     kwargs={"max_new_tokens":limit,"do_sample":temperature>0,"pad_token_id":tokenizer.eos_token_id,
-            "eos_token_id":tokenizer.eos_token_id,"repetition_penalty":1.08,"use_cache":True,"max_time":45}
+            "eos_token_id":tokenizer.eos_token_id,"repetition_penalty":1.08,"use_cache":True,"max_time":15}
     if temperature>0: kwargs["temperature"]=temperature
     with torch.inference_mode():
         out=model.generate(**inputs,**kwargs)
@@ -155,15 +155,18 @@ def validated_payload(response:str,kind:str)->dict[str,Any]:
 @app.post("/generate")
 def generate(r:GenerateRequest):
     direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\nQuestion: "+r.prompt)
-    answer=gen(direct_prompt,min(r.max_new_tokens,64),r.temperature)
+    answer=gen(direct_prompt,min(r.max_new_tokens,48),r.temperature)
+    first_attempt=answer
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         # One bounded retry with a stronger plain-text instruction; never substitute a fake answer.
-        retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\nQuestion: "+r.prompt)
-        answer=gen(retry_prompt,min(r.max_new_tokens,32),0.0)
+        retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\\nQuestion: "+r.prompt)
+        answer=gen(retry_prompt,min(r.max_new_tokens,24),0.0)
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         raise HTTPException(status_code=502,detail={
             "error":"invalid_model_output",
-            "message":"CRAM AI could not produce a usable plain-text answer after one retry. No hosted fallback is configured."
+            "message":"CRAM AI could not produce a usable plain-text answer after one retry. No hosted fallback is configured.",
+            "first_attempt":first_attempt[:500],
+            "retry_attempt":answer[:500]
         })
     return {"response":answer,"model":"CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":True}
 
