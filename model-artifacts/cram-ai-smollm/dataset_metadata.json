@@ -1,0 +1,40 @@
+{
+  "dataset_id": "allenai/ai2_arc",
+  "source_url": "https://huggingface.co/datasets/allenai/ai2_arc",
+  "license": "CC-BY-SA-4.0",
+  "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "attribution": "Allen Institute for AI, AI2 ARC dataset; see dataset card and paper https://arxiv.org/abs/1803.05457",
+  "seed": 42,
+  "train_questions": 1000,
+  "validation_questions": 200,
+  "test_questions": 200,
+  "train_examples": 4000,
+  "validation_examples": 800,
+  "test_examples": 800,
+  "task_counts": {
+    "train": {
+      "flashcard": 1000,
+      "mcq": 1000,
+      "revision": 1000,
+      "short_answer": 1000
+    },
+    "validation": {
+      "flashcard": 200,
+      "mcq": 200,
+      "revision": 200,
+      "short_answer": 200
+    },
+    "test": {
+      "flashcard": 200,
+      "mcq": 200,
+      "revision": 200,
+      "short_answer": 200
+    }
+  },
+  "limitations": [
+    "English school-level science MCQs only; not a complete CBSE/NCERT corpus.",
+    "Generated variants share source question/answer and are not independent new facts.",
+    "No textbook notes, formulas, definitions, poems or long-answer corpus is included.",
+    "Model quality must be assessed on held-out data; nonempty output is not proof of correctness."
+  ]
+}
