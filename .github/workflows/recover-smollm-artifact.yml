@@ -1,6 +1,11 @@
 name: Recover and evaluate saved SmolLM2 artifact
 
 on:
+  push:
+    branches:
+      - agent/cram-ai-smollm-experiment
+    paths:
+      - ".github/workflows/recover-smollm-artifact.yml"
   workflow_dispatch:
 
 permissions:
