@@ -3,7 +3,6 @@ name: CRAM AI SmolLM2 experiment (free CPU runner)
 on:
   push:
     branches:
-      - agent/cram-ai-model-pipeline
       - agent/cram-ai-smollm-experiment
     paths:
       # Avoid spending an hour retraining for API, evaluator, test, or documentation changes.
