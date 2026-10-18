@@ -6,16 +6,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# Render's free CPU instance is heavily constrained; avoid oversized BLAS thread pools.
+# Keep the GGUF runtime lightweight on 512 MiB hosting; only import PyTorch for adapter inference.
+USE_GGUF=os.getenv("USE_GGUF","0")=="1"
 os.environ.setdefault("OMP_NUM_THREADS","1")
 os.environ.setdefault("MKL_NUM_THREADS","1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS","1")
-import torch
-torch.set_num_threads(1)
-try:
-    torch.set_num_interop_threads(1)
-except RuntimeError:
-    pass
+if not USE_GGUF:
+    import torch
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
 
 app=FastAPI(title="CRAM AI Fine-tuned Model API",version="0.3.0")
 origins=[x.strip() for x in os.getenv("CORS_ORIGINS","*").split(",") if x.strip()]
@@ -25,27 +27,51 @@ HERE=Path(__file__).resolve().parent
 configured=os.getenv("MODEL_DIR")
 _candidates=[Path(configured)] if configured else [HERE.parent/"model-artifacts"/"cram-ai",Path.cwd()/"model-artifacts"/"cram-ai",Path.cwd()/"artifacts"/"cram-ai"]
 MODEL_DIR=next((p.resolve() for p in _candidates if (p/"training_metadata.json").is_file() and (p/"TRAINING_FINISHED").is_file()),_candidates[0].resolve())
-tokenizer=None; model=None; meta=None; load_error=None
-try:
-    if (MODEL_DIR/"training_metadata.json").is_file() and (MODEL_DIR/"TRAINING_FINISHED").is_file():
-        from transformers import AutoTokenizer,AutoModelForCausalLM
-        from peft import PeftModel
-        meta=json.loads((MODEL_DIR/"training_metadata.json").read_text(encoding="utf-8"))
-        tokenizer=AutoTokenizer.from_pretrained(MODEL_DIR)
-        if meta.get("model_type")=="llama":
-            # SmolLM2 is a compact instruction-tuned Llama-family model; FP16 reduces RAM on CPU hosting.
-            base=AutoModelForCausalLM.from_pretrained(meta["base_model"],torch_dtype=__import__("torch").float16,low_cpu_mem_usage=True,local_files_only=os.getenv("HF_LOCAL_ONLY","0")=="1")
-        else:
-            base=AutoModelForCausalLM.from_pretrained(meta["base_model"])
-        model=PeftModel.from_pretrained(base,MODEL_DIR)
-        model.eval()
-except Exception as e:
-    load_error=f"{type(e).__name__}: {e}"
+GGUF_PATH=Path(os.getenv("GGUF_MODEL_PATH",str(HERE.parent/"model-artifacts"/"cram-ai-smollm-q4_0.gguf"))).resolve()
+tokenizer=None; model=None; gguf_model=None; meta=None; load_error=None
+if USE_GGUF:
+    try:
+        if not GGUF_PATH.is_file():
+            raise FileNotFoundError(f"Configured GGUF model does not exist: {GGUF_PATH}")
+        from llama_cpp import Llama
+        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","1024")),n_threads=int(os.getenv("MODEL_THREADS","2")),n_batch=128,verbose=False)
+        metadata_path=HERE.parent/"model-artifacts"/"cram-ai-smollm"/"training_metadata.json"
+        meta=json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+        meta.update({"base_model":meta.get("base_model","HuggingFaceTB/SmolLM2-135M-Instruct"),"model_type":"llama","prompt_format":"chat_template","artifact_format":"GGUF Q4_0"})
+    except Exception as e:
+        load_error=f"{type(e).__name__}: {e}"
+else:
+    try:
+        if (MODEL_DIR/"training_metadata.json").is_file() and (MODEL_DIR/"TRAINING_FINISHED").is_file():
+            from transformers import AutoTokenizer,AutoModelForCausalLM
+            from peft import PeftModel
+            meta=json.loads((MODEL_DIR/"training_metadata.json").read_text(encoding="utf-8"))
+            tokenizer=AutoTokenizer.from_pretrained(MODEL_DIR)
+            if meta.get("model_type")=="llama":
+                base=AutoModelForCausalLM.from_pretrained(meta["base_model"],torch_dtype=__import__("torch").float16,low_cpu_mem_usage=True,local_files_only=os.getenv("HF_LOCAL_ONLY","0")=="1")
+            else:
+                base=AutoModelForCausalLM.from_pretrained(meta["base_model"])
+            model=PeftModel.from_pretrained(base,MODEL_DIR)
+            model.eval()
+    except Exception as e:
+        load_error=f"{type(e).__name__}: {e}"
+
+def model_ready()->bool:
+    return gguf_model is not None if USE_GGUF else model is not None and tokenizer is not None
 
 def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
-    if model is None or tokenizer is None:
-        raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The saved CRAM AI adapter is not loadable on this server. No hosted fallback is configured.","model_dir":str(MODEL_DIR),"load_error":load_error})
+    if not model_ready():
+        raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The configured CRAM AI model is not loadable on this server. No hosted fallback is configured.","model_dir":str(GGUF_PATH if USE_GGUF else MODEL_DIR),"load_error":load_error})
     prompt=prompt.strip()
+    if USE_GGUF:
+        try:
+            result=gguf_model.create_chat_completion(messages=[{"role":"user","content":prompt}],max_tokens=limit,temperature=temperature,top_p=0.9,repeat_penalty=1.08)
+            answer=str(result["choices"][0]["message"].get("content","")).strip()
+            if not answer:
+                raise ValueError("GGUF model returned an empty completion.")
+            return answer
+        except Exception as e:
+            raise HTTPException(status_code=502,detail={"error":"gguf_generation_failed","message":f"Local GGUF generation failed: {type(e).__name__}: {e}"})
     prompt_format=meta.get("prompt_format","chat_template" if meta and meta.get("model_type")=="llama" else "instruction_response") if meta else "instruction_response"
     if prompt_format=="chat_template" and getattr(tokenizer,"chat_template",None):
         prompt=tokenizer.apply_chat_template([{"role":"user","content":prompt}],tokenize=False,add_generation_prompt=True)
@@ -99,13 +125,17 @@ def result_payload(response:str,kind:str)->dict[str,Any]:
 
 @app.get("/health")
 def health():
-    return {"status":"ready" if model is not None else "model_unavailable","model_loaded":model is not None,
-            "model_dir":str(MODEL_DIR),"base_model":meta.get("base_model") if meta else None,
-            "model_type":meta.get("model_type") if meta else None,"generation_quality":"not_certified"}
+    return {"status":"ready" if model_ready() else "model_unavailable","model_loaded":model_ready(),
+            "model_dir":str(GGUF_PATH if USE_GGUF else MODEL_DIR),"base_model":meta.get("base_model") if meta else None,
+            "model_type":meta.get("model_type") if meta else None,
+            "inference_backend":"llama.cpp GGUF" if USE_GGUF else "Transformers + PEFT",
+            "generation_quality":"not_certified"}
 
 @app.get("/model-info")
 def model_info():
-    return {"name":"CRAM AI","model_loaded":model is not None,"metadata":meta,"load_error":load_error,"model_dir":str(MODEL_DIR)}
+    return {"name":"CRAM AI","model_loaded":model_ready(),"metadata":meta,"load_error":load_error,
+            "model_dir":str(GGUF_PATH if USE_GGUF else MODEL_DIR),
+            "inference_backend":"llama.cpp GGUF" if USE_GGUF else "Transformers + PEFT"}
 
 def suspicious_generic_output(prompt:str,response:str)->bool:
     """Reject malformed JSON, repetitive fragments, question echoes, and gibberish."""
@@ -174,7 +204,7 @@ def generate(r:GenerateRequest):
             "first_attempt":first_attempt[:500],
             "retry_attempt":answer[:500]
         })
-    return {"response":answer,"model":"CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":True}
+    return {"response":answer,"model":"CRAM AI SmolLM2-135M-Instruct Q4_0 GGUF" if USE_GGUF else "CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":True}
 
 def retrieve_note_sentences(question:str,source:str)->list[str]:
     stop={"what","is","are","was","were","the","a","an","why","how","when","where","which","who","does","do","did","can","could","should","would","of","to","for","in","on","at","by","with","from","and","or","but","it","this","that","these","those","explain","tell","me","about","please"}
@@ -208,7 +238,7 @@ def answer_from_notes(r:AskNotesRequest):
         "response":"Based on your notes: "+" ".join(sources),
         "answer_mode":"extractive",
         "model":"source retrieval from user-provided notes",
-        "model_loaded":model is not None,
+        "model_loaded":model_ready(),
         "output_valid":True,
         "sources":sources
     }
