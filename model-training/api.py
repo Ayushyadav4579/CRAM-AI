@@ -34,7 +34,7 @@ if USE_GGUF:
         if not GGUF_PATH.is_file():
             raise FileNotFoundError(f"Configured GGUF model does not exist: {GGUF_PATH}")
         from llama_cpp import Llama
-        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","1024")),n_threads=int(os.getenv("MODEL_THREADS","2")),n_batch=128,chat_format="chatml",verbose=False)
+        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","512")),n_threads=int(os.getenv("MODEL_THREADS","1")),n_batch=int(os.getenv("MODEL_BATCH","32")),n_ubatch=int(os.getenv("MODEL_UBATCH","32")),chat_format="chatml",verbose=False)
         metadata_path=HERE.parent/"model-artifacts"/"cram-ai-smollm"/"training_metadata.json"
         meta=json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
         meta.update({"base_model":meta.get("base_model","HuggingFaceTB/SmolLM2-135M-Instruct"),"model_type":"llama","prompt_format":"chat_template","artifact_format":"GGUF Q4_0"})
@@ -191,12 +191,12 @@ def validated_payload(response:str,kind:str)->dict[str,Any]:
 @app.post("/generate")
 def generate(r:GenerateRequest):
     direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\nQuestion: "+r.prompt)
-    answer=gen(direct_prompt,min(r.max_new_tokens,48),r.temperature)
+    answer=gen(direct_prompt,min(r.max_new_tokens,16),r.temperature)
     first_attempt=answer
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         # One bounded retry with a stronger plain-text instruction; never substitute a fake answer.
         retry_prompt=("Give a concise direct plain-text answer. Do not return JSON or a flashcard.\nQuestion: "+r.prompt)
-        answer=gen(retry_prompt,min(r.max_new_tokens,24),0.0)
+        answer=gen(retry_prompt,min(r.max_new_tokens,8),0.0)
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         raise HTTPException(status_code=502,detail={
             "error":"invalid_model_output",
