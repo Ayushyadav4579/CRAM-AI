@@ -34,7 +34,7 @@ if USE_GGUF:
         if not GGUF_PATH.is_file():
             raise FileNotFoundError(f"Configured GGUF model does not exist: {GGUF_PATH}")
         from llama_cpp import Llama
-        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","512")),n_threads=int(os.getenv("MODEL_THREADS","1")),n_batch=int(os.getenv("MODEL_BATCH","32")),n_ubatch=int(os.getenv("MODEL_UBATCH","32")),chat_format="chatml",verbose=False)
+        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","512")),n_threads=int(os.getenv("MODEL_THREADS","2")),n_batch=int(os.getenv("MODEL_BATCH","32")),n_ubatch=int(os.getenv("MODEL_UBATCH","32")),chat_format="chatml",verbose=False)
         metadata_path=HERE.parent/"model-artifacts"/"cram-ai-smollm"/"training_metadata.json"
         meta=json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
         meta.update({"base_model":meta.get("base_model","HuggingFaceTB/SmolLM2-135M-Instruct"),"model_type":"llama","prompt_format":"chat_template","artifact_format":"GGUF Q4_0"})
