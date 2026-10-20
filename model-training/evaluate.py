@@ -7,7 +7,7 @@ def norm(s):
 
 def parsed_key(text):
     # Only accept an explicit answer label at the start of the generated answer.
-    m = re.match(r"^\s*(?:(?:answer|correct\s+option|option)\s*[:-]?\s*)?([A-D])(?:\s*[.)\-:]|\s|$)", str(text), re.I)
+    m = re.match(r"^\s*(?:(?:answer|correct\s+option|option)\s*[:\-]?\s*)?([A-D])(?:\s*[.)\-:]|\s|$)", str(text), re.I)
     return m.group(1).upper() if m else None
 
 def token_f1(expected, predicted):
