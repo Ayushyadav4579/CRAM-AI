@@ -4,7 +4,7 @@ WORKDIR /app
 COPY requirements-gguf.txt /app/requirements-gguf.txt
 # The CPU wheel index may not publish a wheel for every Python/platform combination.
 # Install the toolchain so pip can safely build llama-cpp-python when it must fall back to source.
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake ninja-build \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake ninja-build git \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir --prefer-binary --index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --extra-index-url https://pypi.org/simple -r /app/requirements-gguf.txt
 COPY model-training /app/model-training
