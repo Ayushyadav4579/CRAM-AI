@@ -1,0 +1,95 @@
+name: CRAM AI SmolLM2 held-out evaluation (no retraining)
+
+on:
+  push:
+    branches:
+      - agent/cram-ai-smollm-experiment
+    paths:
+      - ".github/workflows/cram-ai-evaluate-only.yml"
+      - "model-training/evaluate.py"
+      - "model-artifacts/cram-ai-smollm/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cram-ai-smollm-evaluation
+  cancel-in-progress: false
+
+jobs:
+  evaluate-trained-weights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out the existing trained model
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: model-training/requirements.txt
+
+      - name: Install evaluation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r model-training/requirements.txt pytest
+
+      - name: Verify evaluator and model metadata
+        run: |
+          python -m compileall -q model-training
+          pytest -q model-training/tests
+          test -f model-artifacts/cram-ai-smollm/adapter_model.safetensors
+          test -f model-artifacts/cram-ai-smollm/TRAINING_FINISHED
+          test -f model-artifacts/cram-ai-smollm/training_metadata.json
+
+      - name: Prepare licensed held-out science dataset
+        run: |
+          python model-training/prepare_public_dataset.py \
+            --output-dir model-training/data/public \
+            --max-train-questions 1000 \
+            --max-validation-questions 200 \
+            --max-test-questions 200
+          cat model-training/data/public/dataset_metadata.json
+
+      - name: Create balanced 100-question evaluation sample
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source = Path("model-training/data/public/test.jsonl")
+          rows = [json.loads(line) for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+          tasks = sorted({row.get("task", "unknown") for row in rows})
+          chosen = []
+          for task in tasks:
+              chosen.extend([row for row in rows if row.get("task", "unknown") == task][:25])
+          if len(chosen) < 80:
+              raise SystemExit(f"Expected at least 80 balanced held-out examples; got {len(chosen)}")
+          Path("model-training/data/public/test-balanced.jsonl").write_text(
+              "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in chosen),
+              encoding="utf-8"
+          )
+          print(json.dumps({"task_counts": {task: sum(row.get("task", "unknown") == task for row in chosen) for task in tasks}, "total": len(chosen)}))
+          PY
+
+      - name: Evaluate saved LoRA weights on held-out questions
+        run: |
+          python model-training/evaluate.py \
+            --model model-artifacts/cram-ai-smollm \
+            --dataset model-training/data/public/test-balanced.jsonl \
+            --report model-artifacts/evaluation-smollm-smoke.json \
+            --limit 100
+          cat model-artifacts/evaluation-smollm-smoke.json
+
+      - name: Preserve the held-out report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cram-ai-smollm-heldout-evaluation
+          path: |
+            model-artifacts/evaluation-smollm-smoke.json
+            model-training/data/public/dataset_metadata.json
+          if-no-files-found: warn
+          retention-days: 90
