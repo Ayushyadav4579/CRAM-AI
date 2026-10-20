@@ -62,9 +62,9 @@ jobs:
           try:
               status, generated = request("/generate", {
                   "prompt":"Why do plants need sunlight? Answer in one sentence.",
-                  "max_new_tokens":64,
+                  "max_new_tokens":12,
                   "temperature":0
-              }, timeout=180)
+              }, timeout=120)
               text = str(generated.get("response","")).lower()
               relevant = any(term in text for term in ("photosynthesis","energy","glucose","food","grow"))
               print("GENERATION", json.dumps({"status":status,"relevant":relevant,"response":generated}, ensure_ascii=False))
