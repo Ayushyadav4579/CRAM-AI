@@ -1,0 +1,78 @@
+name: CRAM AI live Render API smoke test
+
+on:
+  push:
+    branches:
+      - agent/cram-ai-smollm-experiment
+    paths:
+      - ".github/workflows/cram-ai-public-api-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cram-ai-live-api-smoke
+  cancel-in-progress: false
+
+jobs:
+  verify-live-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check live model readiness and source-grounded answers
+        env:
+          API_BASE: https://cram-ai-api.onrender.com
+        run: |
+          python - <<'PY'
+          import json, os, sys, time, urllib.error, urllib.request
+          base = os.environ["API_BASE"].rstrip("/")
+          def request(path, payload=None, timeout=180):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(base + path, data=data, headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(req, timeout=timeout) as res:
+                  return res.status, json.loads(res.read().decode())
+          health = None
+          last_error = None
+          for _ in range(18):
+              try:
+                  status, health = request("/health", timeout=15)
+                  if status == 200 and health.get("model_loaded"):
+                      break
+                  last_error = f"health response not ready: {health}"
+              except Exception as e:
+                  last_error = repr(e)
+              time.sleep(5)
+          if not health or not health.get("model_loaded"):
+              raise SystemExit("Live model did not become ready: " + str(last_error or health))
+          print("HEALTH", json.dumps(health, ensure_ascii=False))
+          status, info = request("/model-info", timeout=30)
+          if status != 200 or not info.get("model_loaded"):
+              raise SystemExit("Model-info did not confirm loaded weights: " + json.dumps(info))
+          print("MODEL_INFO", json.dumps(info, ensure_ascii=False))
+          status, answer = request("/study/answer", {
+              "question":"Why do plants need sunlight?",
+              "text":"Plants use sunlight during photosynthesis to make glucose from carbon dioxide and water. Glucose provides energy and materials for growth.",
+              "grade":10,
+              "subject":"Science"
+          }, timeout=30)
+          if status != 200 or not answer.get("output_valid") or "photosynthesis" not in answer.get("response","").lower():
+              raise SystemExit("Source-grounded study answer failed: " + json.dumps(answer))
+          print("STUDY_ANSWER", json.dumps(answer, ensure_ascii=False))
+          try:
+              status, generated = request("/generate", {
+                  "prompt":"Why do plants need sunlight? Answer in one sentence.",
+                  "max_new_tokens":64,
+                  "temperature":0
+              }, timeout=180)
+              text = str(generated.get("response","")).lower()
+              relevant = any(term in text for term in ("photosynthesis","energy","glucose","food","grow"))
+              print("GENERATION", json.dumps({"status":status,"relevant":relevant,"response":generated}, ensure_ascii=False))
+              if status != 200 or not relevant or not generated.get("output_valid", True):
+                  raise SystemExit("Generic model generation did not pass the concept relevance smoke test.")
+          except urllib.error.HTTPError as e:
+              body = e.read().decode("utf-8","replace")
+              print("GENERATION_HTTP_ERROR", e.code, body)
+              raise SystemExit("Generic model generation endpoint failed its live smoke test.")
+          print("PASS: live API, loaded model, source-grounded endpoint, and generic generation verified.")
+          PY
