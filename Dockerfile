@@ -1,5 +1,5 @@
 FROM python:3.11-slim
-ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 USE_GGUF=1 GGUF_MODEL_PATH=/app/model-artifacts/cram-ai-smollm-q4_0.gguf MODEL_CONTEXT=1024 MODEL_THREADS=2
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 USE_GGUF=1 GGUF_MODEL_PATH=/app/model-artifacts/cram-ai-smollm-q4_0.gguf MODEL_CONTEXT=1024 MODEL_THREADS=2 CMAKE_ARGS=-DGGML_NATIVE=OFF
 WORKDIR /app
 COPY requirements-gguf.txt /app/requirements-gguf.txt
 # The CPU wheel index may not publish a wheel for every Python/platform combination.
