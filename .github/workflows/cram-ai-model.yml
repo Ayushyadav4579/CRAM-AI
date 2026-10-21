@@ -66,17 +66,17 @@ jobs:
           restore-keys: |
             cram-ai-checkpoints-${{ github.ref_name }}-
 
-      - name: Fine-tune DistilGPT2 on all available licensed ARC training questions (one CPU epoch)
+      - name: Fine-tune the same SmolLM2 base model used by the deployed API on all licensed ARC training questions (one CPU epoch)
         run: |
           python model-training/train.py \
             --dataset model-training/data/public/train.jsonl \
             --eval-dataset model-training/data/public/validation.jsonl \
-            --model-id distilgpt2 \
+            --model-id HuggingFaceTB/SmolLM2-135M-Instruct \
             --output model-artifacts/cram-ai \
             --epochs 1 \
             --max-length 256 \
             --resume
-          cp model-training/data/public/dataset_metadata.json model-artifacts/cram-ai/dataset_metadata.json
+          cp model-training/data/public/dataset_metadata.json model-artifacts/cram-ai-smollm/dataset_metadata.json
 
       - name: Evaluate on untouched test questions
         run: |
@@ -91,11 +91,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add model-artifacts/cram-ai model-artifacts/evaluation.json
+          git add model-artifacts/cram-ai-smollm model-artifacts/evaluation.json
           if git diff --cached --quiet; then
             echo "No model artifact changes to commit."
           else
-            git commit -m "Store CRAM AI retrained adapter and strict evaluation"
+            git commit -m "Store CRAM AI SmolLM2 retrained adapter and strict evaluation"
             git fetch origin "${GITHUB_REF_NAME}"
             if ! git rebase "origin/${GITHUB_REF_NAME}"; then
               conflicted="$(git diff --name-only --diff-filter=U)"

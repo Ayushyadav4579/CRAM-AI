@@ -2,7 +2,7 @@ name: Export trained SmolLM2 adapter to a compact GGUF model
 
 on:
   push:
-    branches: [agent/cram-ai-smollm-experiment]
+    branches: [agent/cram-ai-model-pipeline]
     paths:
       - "model-artifacts/cram-ai-smollm/**"
   workflow_dispatch:
@@ -25,10 +25,8 @@ jobs:
           persist-credentials: true
           ref: agent/cram-ai-model-pipeline
 
-      - name: Fetch the latest trained adapter from the experiment branch
+      - name: Verify the newly trained adapter from the deployment branch
         run: |
-          git fetch origin agent/cram-ai-smollm-experiment
-          git checkout FETCH_HEAD -- model-artifacts/cram-ai-smollm
           test -s model-artifacts/cram-ai-smollm/adapter_model.safetensors
           test -s model-artifacts/cram-ai-smollm/training_metadata.json
 
