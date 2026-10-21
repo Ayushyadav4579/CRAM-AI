@@ -83,7 +83,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
             # Use the model's native ChatML prompt through the plain completion API.
             # This avoids llama.cpp chat-handler/template detection overhead on the
             # small CPU-only Render instance while retaining the instruct model format.
-            chat_prompt=f"<|im_start|>user\\n{prompt}\\n<|im_end|>\\n<|im_start|>assistant\\n"
+            chat_prompt=f"<|im_start|>user\n{prompt}\n<|im_end|>\n<|im_start|>assistant\n"
             result=gguf_model.create_completion(
                 prompt=chat_prompt,
                 max_tokens=limit,
