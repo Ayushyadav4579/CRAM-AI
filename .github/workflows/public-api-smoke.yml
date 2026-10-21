@@ -57,7 +57,11 @@ jobs:
               if exc.code != 422 or detail.get("detail",{}).get("error") != "insufficient_source_evidence":
                   raise SystemExit("Unexpected invalid-evidence response: " + json.dumps({"status":exc.code,"detail":detail}))
               print("INVALID_EVIDENCE_REJECTED", json.dumps({"status":exc.code,"detail":detail}))
-          status, generated = request("/generate", {"prompt":"In one short sentence, what is photosynthesis?","max_new_tokens":48,"temperature":0}, timeout=180)
+          try:
+              status, generated = request("/generate", {"prompt":"In one short sentence, what is photosynthesis?","max_new_tokens":48,"temperature":0}, timeout=180)
+          except urllib.error.HTTPError as exc:
+              body = exc.read().decode("utf-8", "replace")
+              raise SystemExit("Real model generation failed with HTTP " + str(exc.code) + ": " + body)
           if status != 200 or generated.get("model_loaded") is not True or not generated.get("response","").strip():
               raise SystemExit("Real model generation failed: " + json.dumps({"status":status,"response":generated}))
           print("REAL_GENERATION_FUNCTIONAL; quality status is reported separately", json.dumps(generated))
