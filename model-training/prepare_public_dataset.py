@@ -76,16 +76,19 @@ def main():
     # official splits. Keep each normalized question in exactly one partition.
     # Train takes precedence, then validation, then untouched test.
     def remove_seen_questions(rows, seen):
-        kept=[]; local_seen=set()
+        kept=[]; local_owner={}
         for row in rows:
             fp=question_fingerprint(row)
             if fp is None:
                 raise SystemExit("Could not fingerprint a source question; refusing unsafe split.")
-            if fp in seen or fp in local_seen:
+            if fp in seen:
                 continue
-            local_seen.add(fp)
-            kept.append(row)
-        seen.update(local_seen)
+            # Preserve every task variant for one source question, but choose
+            # only one source_id if ARC-Easy/ARC-Challenge duplicate it.
+            owner=local_owner.setdefault(fp,row["source_id"])
+            if row["source_id"]==owner:
+                kept.append(row)
+        seen.update(local_owner)
         return kept
     seen_questions=set()
     train=remove_seen_questions(train,seen_questions)
@@ -93,6 +96,7 @@ def main():
     test=remove_seen_questions(test,seen_questions)
     if not train or not validation or not test:
         raise SystemExit("Leakage-safe deduplication left an empty split; refusing to train.")
+    train_ids={r["source_id"] for r in train}; val_ids={r["source_id"] for r in validation}; test_ids={r["source_id"] for r in test}
     train_q={question_fingerprint(r) for r in train}
     val_q={question_fingerprint(r) for r in validation}
     test_q={question_fingerprint(r) for r in test}
