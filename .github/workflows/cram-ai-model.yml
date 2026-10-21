@@ -12,6 +12,7 @@ on:
       - "model-training/dataset_pipeline.py"
       - "model-training/requirements.txt"
       - "model-training/data/**"
+      - ".github/workflows/cram-ai-model.yml"
   workflow_dispatch:
 
 permissions:
