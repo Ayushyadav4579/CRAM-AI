@@ -66,17 +66,38 @@ def main():
     if not train or not validation or not test: raise SystemExit("Dataset preparation produced an empty split; refusing to train.")
     train_ids={r["source_id"] for r in train}; val_ids={r["source_id"] for r in validation}; test_ids={r["source_id"] for r in test}
     if train_ids&val_ids or train_ids&test_ids or val_ids&test_ids: raise SystemExit("Source-ID leakage detected across splits.")
-    def question_fingerprints(rows):
-        values=set()
+    def question_fingerprint(row):
+        m=re.search(r"Question:\s*(.*?)\nOptions:\n(.*)",row["instruction"],re.S)
+        if not m:
+            return None
+        normalized=re.sub(r"\W+"," ",(m.group(1)+" "+m.group(2)).lower()).strip()
+        return digest(normalized)
+    # ARC-Easy and ARC-Challenge can contain the same question in different
+    # official splits. Keep each normalized question in exactly one partition.
+    # Train takes precedence, then validation, then untouched test.
+    def remove_seen_questions(rows, seen):
+        kept=[]; local_seen=set()
         for row in rows:
-            m=re.search(r"Question:\s*(.*?)\nOptions:\n(.*)",row["instruction"],re.S)
-            if m:
-                normalized=re.sub(r"\W+"," ",(m.group(1)+" "+m.group(2)).lower()).strip()
-                values.add(digest(normalized))
-        return values
-    train_q=question_fingerprints(train); val_q=question_fingerprints(validation); test_q=question_fingerprints(test)
+            fp=question_fingerprint(row)
+            if fp is None:
+                raise SystemExit("Could not fingerprint a source question; refusing unsafe split.")
+            if fp in seen or fp in local_seen:
+                continue
+            local_seen.add(fp)
+            kept.append(row)
+        seen.update(local_seen)
+        return kept
+    seen_questions=set()
+    train=remove_seen_questions(train,seen_questions)
+    validation=remove_seen_questions(validation,seen_questions)
+    test=remove_seen_questions(test,seen_questions)
+    if not train or not validation or not test:
+        raise SystemExit("Leakage-safe deduplication left an empty split; refusing to train.")
+    train_q={question_fingerprint(r) for r in train}
+    val_q={question_fingerprint(r) for r in validation}
+    test_q={question_fingerprint(r) for r in test}
     if train_q&val_q or train_q&test_q or val_q&test_q:
-        raise SystemExit("Question/option content leakage detected across train, validation, and test splits.")
+        raise SystemExit("Question/option content leakage remains after deduplication.")
     write(out/"train.jsonl",train); write(out/"validation.jsonl",validation); write(out/"test.jsonl",test)
     metadata={"dataset_id":DATASET_ID,"source_url":SOURCE_URL,"license":LICENSE,"license_url":"https://creativecommons.org/licenses/by-sa/4.0/","attribution":"Allen Institute for AI, AI2 ARC dataset; see dataset card and paper https://arxiv.org/abs/1803.05457","seed":a.seed,"train_questions":len(train_ids),"validation_questions":len(val_ids),"test_questions":len(test_ids),"train_examples":len(train),"validation_examples":len(validation),"test_examples":len(test),"task_counts":{split:{task:sum(r["task"]==task for r in rows) for task in sorted({r["task"] for r in rows})} for split,rows in [("train",train),("validation",validation),("test",test)]},"limitations":["English school-level science MCQs only; not a complete CBSE/NCERT corpus.","Generated variants share source question/answer and are not independent new facts.","No textbook notes, formulas, definitions, poems or long-answer corpus is included.","Model quality must be assessed on held-out data; nonempty output is not proof of correctness."]}
     (out/"dataset_metadata.json").write_text(json.dumps(metadata,indent=2),encoding="utf-8")
