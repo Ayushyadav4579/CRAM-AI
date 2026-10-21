@@ -77,7 +77,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
         raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The configured CRAM AI model is not loadable on this server. No hosted fallback is configured.","model_dir":str(GGUF_PATH if USE_GGUF else MODEL_DIR),"load_error":load_error})
     prompt=_fit_prompt_to_context(prompt)
     # This is a 135M model on a small CPU instance. Keep per-request generation bounded.
-    limit=max(1,min(int(limit),8))
+    limit=max(1,min(int(limit),64))
     if USE_GGUF:
         try:
             # Use the model's native ChatML prompt through the plain completion API.
@@ -220,7 +220,7 @@ def generate(r:GenerateRequest):
     # Keep this endpoint bounded on the free CPU instance. A single attempt avoids
     # turning one slow inference into two sequential requests that exceed client timeouts.
     direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\nQuestion: "+r.prompt)
-    answer=gen(direct_prompt,min(r.max_new_tokens,8),r.temperature)
+    answer=gen(direct_prompt,min(r.max_new_tokens,64),r.temperature)
     if not answer.strip() or suspicious_generic_output(r.prompt,answer):
         raise HTTPException(status_code=502,detail={
             "error":"invalid_model_output",
