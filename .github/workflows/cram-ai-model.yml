@@ -72,7 +72,7 @@ jobs:
             --dataset model-training/data/public/train.jsonl \
             --eval-dataset model-training/data/public/validation.jsonl \
             --model-id HuggingFaceTB/SmolLM2-135M-Instruct \
-            --output model-artifacts/cram-ai \
+            --output model-artifacts/cram-ai-smollm \
             --epochs 1 \
             --max-length 256 \
             --resume
@@ -81,7 +81,7 @@ jobs:
       - name: Evaluate on untouched test questions
         run: |
           python model-training/evaluate.py \
-            --model model-artifacts/cram-ai \
+            --model model-artifacts/cram-ai-smollm \
             --dataset model-training/data/public/test.jsonl \
             --report model-artifacts/evaluation.json \
             --limit 400
@@ -99,7 +99,7 @@ jobs:
             git fetch origin "${GITHUB_REF_NAME}"
             if ! git rebase "origin/${GITHUB_REF_NAME}"; then
               conflicted="$(git diff --name-only --diff-filter=U)"
-              if [ -z "$conflicted" ] || printf '%s\n' "$conflicted" | grep -Ev '^(model-artifacts/cram-ai(/|$)|model-artifacts/evaluation\.json$)' | grep -q .; then
+              if [ -z "$conflicted" ] || printf '%s\n' "$conflicted" | grep -Ev '^(model-artifacts/cram-ai-smollm(/|$)|model-artifacts/evaluation\.json$)' | grep -q .; then
                 echo "Unsafe rebase conflict outside the generated model artifacts:"
                 printf '%s\n' "$conflicted"
                 git rebase --abort
@@ -107,7 +107,7 @@ jobs:
               fi
               # The rebased commit contains the freshly trained artifacts; prefer them
               # only for artifact paths while retaining the latest source-code changes.
-              git checkout --theirs -- model-artifacts/cram-ai model-artifacts/evaluation.json
+              git checkout --theirs -- model-artifacts/cram-ai-smollm model-artifacts/evaluation.json
               git add model-artifacts/cram-ai model-artifacts/evaluation.json
               GIT_EDITOR=true git rebase --continue
             fi
@@ -123,7 +123,7 @@ jobs:
         with:
           name: cram-ai-training-run-${{ github.run_id }}
           path: |
-            model-artifacts/cram-ai/
+            model-artifacts/cram-ai-smollm/
             model-artifacts/evaluation.json
             model-artifacts/api-smoke.log
             model-training/data/public/dataset_metadata.json
