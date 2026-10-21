@@ -12,6 +12,7 @@ on:
       - "model-training/prepare_public_dataset.py"
       - "model-training/dataset_pipeline.py"
       - "model-training/requirements.txt"
+      - "model-training/smoke_test_api.py"
       - "model-training/data/**"
       - ".github/workflows/cram-ai-model.yml"
   workflow_dispatch:
@@ -88,7 +89,7 @@ jobs:
             --limit 400
           cat model-artifacts/evaluation.json
 
-      - name: Quality-gate the real FastAPI model endpoint
+      - name: Smoke-test the real FastAPI model endpoint and report semantic quality
         run: python model-training/smoke_test_api.py
 
       - name: Save quality-gated trained artifacts and evaluation
