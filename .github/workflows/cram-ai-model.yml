@@ -8,6 +8,7 @@ on:
       # Only changes that affect training/data should consume a full CPU training run.
       # API, evaluator, tests, docs, and deployment changes are verified separately.
       - "model-training/train.py"
+      - "model-training/evaluate.py"
       - "model-training/prepare_public_dataset.py"
       - "model-training/dataset_pipeline.py"
       - "model-training/requirements.txt"
