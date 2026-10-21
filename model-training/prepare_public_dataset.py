@@ -54,9 +54,9 @@ def write(path,rows):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--output-dir",default="model-training/data/public")
-    p.add_argument("--max-train-questions",type=int,default=1000)
-    p.add_argument("--max-validation-questions",type=int,default=200)
-    p.add_argument("--max-test-questions",type=int,default=200)
+    p.add_argument("--max-train-questions",type=int,default=100000)
+    p.add_argument("--max-validation-questions",type=int,default=100000)
+    p.add_argument("--max-test-questions",type=int,default=100000)
     p.add_argument("--seed",type=int,default=42)
     a=p.parse_args()
     out=Path(a.output_dir)
