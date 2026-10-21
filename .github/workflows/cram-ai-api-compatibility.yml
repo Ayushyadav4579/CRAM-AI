@@ -1,0 +1,96 @@
+name: CRAM AI custom API compatibility gate
+
+on:
+  push:
+    branches:
+      - agent/replace-gemini-with-cram-api
+    paths:
+      - ".github/workflows/cram-ai-api-compatibility.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-live-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Verify health and loaded model
+        env:
+          API_BASE: https://cram-ai-api.onrender.com
+        run: |
+          python - <<'PY'
+          import json, os, time, urllib.request
+          base = os.environ["API_BASE"].rstrip("/")
+          def get(path, timeout=240):
+              with urllib.request.urlopen(base + path, timeout=timeout) as r:
+                  return json.loads(r.read().decode())
+          health = None
+          for attempt in range(24):
+              try:
+                  health = get("/health", timeout=20)
+                  if health.get("model_loaded"):
+                      break
+              except Exception as exc:
+                  print(f"health attempt {attempt + 1}: {exc}")
+              time.sleep(5)
+          print("HEALTH:", json.dumps(health))
+          if not health or not health.get("model_loaded"):
+              raise SystemExit("Custom model is not ready")
+          info = get("/model-info", timeout=30)
+          print("MODEL_INFO:", json.dumps({
+              "model_loaded": info.get("model_loaded"),
+              "base_model": (info.get("metadata") or {}).get("base_model"),
+              "training_rows": (info.get("metadata") or {}).get("training_rows"),
+              "artifact_format": (info.get("metadata") or {}).get("artifact_format"),
+              "backend": info.get("inference_backend")
+          }))
+          if not info.get("model_loaded"):
+              raise SystemExit("Model-info does not confirm loaded model")
+          PY
+      - name: Verify note-grounded answer
+        env:
+          API_BASE: https://cram-ai-api.onrender.com
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          req = urllib.request.Request(
+              os.environ["API_BASE"] + "/study/answer",
+              data=json.dumps({
+                  "question":"Why do plants need sunlight?",
+                  "text":"Plants use sunlight during photosynthesis to make glucose from carbon dioxide and water. Glucose provides energy and materials for growth.",
+                  "grade":10,"subject":"Science"
+              }).encode(),
+              headers={"Content-Type":"application/json"}
+          )
+          with urllib.request.urlopen(req, timeout=45) as r:
+              result = json.loads(r.read().decode())
+          print("ANSWER:", json.dumps(result))
+          if not result.get("output_valid") or "photosynthesis" not in result.get("response","").lower():
+              raise SystemExit("Note-grounded answer failed")
+          PY
+      - name: Measure general generation latency and output
+        env:
+          API_BASE: https://cram-ai-api.onrender.com
+        run: |
+          python - <<'PY'
+          import json, os, time, urllib.request
+          base = os.environ["API_BASE"].rstrip("/")
+          payload = {"prompt":"Answer in one short sentence: Why do plants need sunlight?","max_new_tokens":4,"temperature":0}
+          req = urllib.request.Request(base + "/generate", data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+          started = time.monotonic()
+          try:
+              with urllib.request.urlopen(req, timeout=300) as r:
+                  result = json.loads(r.read().decode())
+              elapsed = round(time.monotonic() - started, 2)
+              print("GENERATION_SECONDS:", elapsed)
+              print("GENERATION_RESULT:", json.dumps(result))
+              if not result.get("output_valid", True) or not result.get("response","").strip():
+                  raise SystemExit("Generation returned empty or invalid output")
+          except Exception as exc:
+              elapsed = round(time.monotonic() - started, 2)
+              print("GENERATION_SECONDS:", elapsed)
+              print("GENERATION_FAILURE:", repr(exc))
+              raise
+          PY
