@@ -35,7 +35,18 @@ def main():
     tokenizer=AutoTokenizer.from_pretrained(model_dir)
     base=AutoModelForCausalLM.from_pretrained(meta["base_model"])
     model=PeftModel.from_pretrained(base,model_dir); model.eval()
-    rows=[json.loads(x) for x in data.read_text(encoding="utf-8").splitlines() if x.strip()][:a.limit]
+    all_rows=[json.loads(x) for x in data.read_text(encoding="utf-8").splitlines() if x.strip()]
+    # Score a meaningful number of MCQs across the entire held-out split,
+    # rather than accidentally scoring only the first 100 questions because
+    # each source question has four task variants stored next to each other.
+    mcq_rows=[r for r in all_rows if r.get("task")=="mcq"]
+    if not mcq_rows:
+        raise SystemExit("Held-out dataset contains no MCQ rows; refusing to report accuracy.")
+    rows=mcq_rows[:a.limit]
+    other_tasks=sorted({str(r.get("task","unknown")) for r in all_rows if r.get("task")!="mcq"})
+    per_task_limit=max(25,a.limit//8)
+    for task in other_tasks:
+        rows.extend([r for r in all_rows if r.get("task")==task][:per_task_limit])
     results=[]
     for i,r in enumerate(rows,1):
         prompt=f"### Instruction:\n{r['instruction']}\n### Response:\n"
