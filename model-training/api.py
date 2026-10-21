@@ -59,7 +59,7 @@ else:
 def model_ready()->bool:
     return gguf_model is not None if USE_GGUF else model is not None and tokenizer is not None
 
-def _fit_prompt_to_context(prompt:str, max_chars:int=1250)->str:
+def _fit_prompt_to_context(prompt:str, max_chars:int=2400)->str:
     """Keep prompts within the small CPU model's context while preserving task instructions."""
     prompt=prompt.strip()
     marker="\nSource material:\n"
@@ -77,7 +77,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
         raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The configured CRAM AI model is not loadable on this server. No hosted fallback is configured.","model_dir":str(GGUF_PATH if USE_GGUF else MODEL_DIR),"load_error":load_error})
     prompt=_fit_prompt_to_context(prompt)
     # This is a 135M model on a small CPU instance. Keep per-request generation bounded.
-    limit=max(1,min(int(limit),64))
+    limit=max(1,min(int(limit),512))
     if USE_GGUF:
         try:
             # Use the model's native ChatML prompt through the plain completion API.
