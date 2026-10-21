@@ -219,8 +219,9 @@ def validated_payload(response:str,kind:str)->dict[str,Any]:
 def generate(r:GenerateRequest):
     # Keep this endpoint bounded on the free CPU instance. A single attempt avoids
     # turning one slow inference into two sequential requests that exceed client timeouts.
-    direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\nQuestion: "+r.prompt)
-    answer=gen(direct_prompt,min(r.max_new_tokens,16),r.temperature)
+    # Keep the prompt tiny on Render Free CPU; the instruct model already uses ChatML.
+    direct_prompt="Answer briefly: "+r.prompt
+    answer=gen(direct_prompt,min(r.max_new_tokens,12),r.temperature)
     if not answer.strip():
         raise HTTPException(status_code=502,detail={
             "error":"empty_model_output",
