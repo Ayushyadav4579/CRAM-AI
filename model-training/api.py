@@ -221,13 +221,16 @@ def generate(r:GenerateRequest):
     # turning one slow inference into two sequential requests that exceed client timeouts.
     direct_prompt=("Answer the user's question directly in plain English. Do not return JSON, a flashcard, or repeat the question unless requested.\nQuestion: "+r.prompt)
     answer=gen(direct_prompt,min(r.max_new_tokens,64),r.temperature)
-    if not answer.strip() or suspicious_generic_output(r.prompt,answer):
+    if not answer.strip():
         raise HTTPException(status_code=502,detail={
-            "error":"invalid_model_output",
-            "message":"CRAM AI could not produce a usable plain-text answer. No hosted fallback is configured.",
-            "attempt":answer[:500]
+            "error":"empty_model_output",
+            "message":"The local CRAM AI model returned an empty answer. No hosted fallback is configured."
         })
-    return {"response":answer,"model":"CRAM AI SmolLM2-135M-Instruct Q4_0 GGUF" if USE_GGUF else "CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":True}
+    # Keep the model's real output visible for debugging and improvement rather than
+    # turning a weak-but-nonempty answer into an opaque HTTP 502. Quality is reported
+    # separately; this field must not be interpreted as a guarantee of correctness.
+    valid=not suspicious_generic_output(r.prompt,answer)
+    return {"response":answer,"model":"CRAM AI SmolLM2-135M-Instruct Q4_0 GGUF" if USE_GGUF else "CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":valid,"quality_status":"uncertified" if not valid else "unverified"}
 
 def retrieve_note_sentences(question:str,source:str)->list[str]:
     stop={"what","is","are","was","were","the","a","an","why","how","when","where","which","who","does","do","did","can","could","should","would","of","to","for","in","on","at","by","with","from","and","or","but","it","this","that","these","those","explain","tell","me","about","please"}
