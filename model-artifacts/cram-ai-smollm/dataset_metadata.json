@@ -5,30 +5,30 @@
   "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
   "attribution": "Allen Institute for AI, AI2 ARC dataset; see dataset card and paper https://arxiv.org/abs/1803.05457",
   "seed": 42,
-  "train_questions": 1000,
-  "validation_questions": 200,
-  "test_questions": 200,
-  "train_examples": 4000,
-  "validation_examples": 800,
-  "test_examples": 800,
+  "train_questions": 3369,
+  "validation_questions": 869,
+  "test_questions": 3546,
+  "train_examples": 13476,
+  "validation_examples": 3476,
+  "test_examples": 14184,
   "task_counts": {
     "train": {
-      "flashcard": 1000,
-      "mcq": 1000,
-      "revision": 1000,
-      "short_answer": 1000
+      "flashcard": 3369,
+      "mcq": 3369,
+      "revision": 3369,
+      "short_answer": 3369
     },
     "validation": {
-      "flashcard": 200,
-      "mcq": 200,
-      "revision": 200,
-      "short_answer": 200
+      "flashcard": 869,
+      "mcq": 869,
+      "revision": 869,
+      "short_answer": 869
     },
     "test": {
-      "flashcard": 200,
-      "mcq": 200,
-      "revision": 200,
-      "short_answer": 200
+      "flashcard": 3546,
+      "mcq": 3546,
+      "revision": 3546,
+      "short_answer": 3546
     }
   },
   "limitations": [
