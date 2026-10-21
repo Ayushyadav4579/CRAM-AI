@@ -62,7 +62,7 @@ def model_ready()->bool:
 def _fit_prompt_to_context(prompt:str, max_chars:int=1250)->str:
     """Keep prompts within the small CPU model's context while preserving task instructions."""
     prompt=prompt.strip()
-    marker="\\nSource material:\\n"
+    marker="\nSource material:\n"
     if len(prompt)<=max_chars:
         return prompt
     if marker in prompt:
