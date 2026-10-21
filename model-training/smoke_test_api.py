@@ -29,10 +29,15 @@ def main():
             while time.time() < deadline:
                 if proc.poll() is not None:
                     raise SystemExit("FastAPI exited before healthy; inspect model-artifacts/api-smoke.log")
-                status, candidate = request("http://127.0.0.1:8765/health", timeout=5)
-                if status == 200 and candidate.get("model_loaded"):
-                    health = candidate
-                    break
+                try:
+                    status, candidate = request("http://127.0.0.1:8765/health", timeout=5)
+                    if status == 200 and candidate.get("model_loaded"):
+                        health = candidate
+                        break
+                except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+                    # Uvicorn imports PyTorch/Transformers before binding the port.
+                    # A refused connection during that startup window is expected.
+                    pass
                 time.sleep(3)
             if not health:
                 raise SystemExit(f"Model API failed readiness: {health}")
