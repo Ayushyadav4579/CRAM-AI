@@ -67,8 +67,8 @@ def main():
       output_dir=str(checkpoint_dir),num_train_epochs=a.epochs,
       per_device_train_batch_size=1,per_device_eval_batch_size=1,
       gradient_accumulation_steps=8,learning_rate=2e-4,logging_steps=10,
-      save_strategy="steps",save_steps=100,save_total_limit=3,
-      eval_strategy="steps",eval_steps=100,load_best_model_at_end=True,
+      save_strategy="steps",save_steps=250,save_total_limit=3,
+      eval_strategy="steps",eval_steps=500,load_best_model_at_end=True,
       metric_for_best_model="eval_loss",greater_is_better=False,
       report_to="none",seed=42,fp16=torch.cuda.is_available(),
       gradient_checkpointing=torch.cuda.is_available()
