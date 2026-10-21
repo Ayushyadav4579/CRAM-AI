@@ -48,13 +48,13 @@ jobs:
           python -m compileall -q model-training
           pytest -q model-training/tests
 
-      - name: Prepare licensed held-out science dataset
+      - name: Prepare the full available licensed ARC train/validation/test splits
         run: |
           python model-training/prepare_public_dataset.py \
             --output-dir model-training/data/public \
-            --max-train-questions 1000 \
-            --max-validation-questions 200 \
-            --max-test-questions 200
+            --max-train-questions 100000 \
+            --max-validation-questions 100000 \
+            --max-test-questions 100000
           cat model-training/data/public/dataset_metadata.json
 
       - name: Restore resumable checkpoints
@@ -65,14 +65,14 @@ jobs:
           restore-keys: |
             cram-ai-checkpoints-${{ github.ref_name }}-
 
-      - name: Fine-tune DistilGPT2 on CPU without paid APIs
+      - name: Fine-tune DistilGPT2 on all available licensed ARC training questions (one CPU epoch)
         run: |
           python model-training/train.py \
             --dataset model-training/data/public/train.jsonl \
             --eval-dataset model-training/data/public/validation.jsonl \
             --model-id distilgpt2 \
             --output model-artifacts/cram-ai \
-            --epochs 2 \
+            --epochs 1 \
             --max-length 256 \
             --resume
           cp model-training/data/public/dataset_metadata.json model-artifacts/cram-ai/dataset_metadata.json
