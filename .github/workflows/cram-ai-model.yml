@@ -87,6 +87,9 @@ jobs:
             --limit 400
           cat model-artifacts/evaluation.json
 
+      - name: Quality-gate the real FastAPI model endpoint
+        run: python model-training/smoke_test_api.py
+
       - name: Save trained artifacts and evaluation before quality gate
         run: |
           git config user.name "github-actions[bot]"
@@ -114,8 +117,6 @@ jobs:
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
-      - name: Quality-gate the real FastAPI model endpoint
-        run: python model-training/smoke_test_api.py
 
       - name: Preserve model, evaluation, and API logs as a downloadable workflow artifact
         if: always()
