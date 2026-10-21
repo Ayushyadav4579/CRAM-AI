@@ -61,7 +61,7 @@ jobs:
       - name: Restore resumable checkpoints
         uses: actions/cache@v4
         with:
-          path: model-artifacts/cram-ai.staging/checkpoints
+          path: model-artifacts/cram-ai-smollm.staging/checkpoints
           key: cram-ai-checkpoints-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             cram-ai-checkpoints-${{ github.ref_name }}-
