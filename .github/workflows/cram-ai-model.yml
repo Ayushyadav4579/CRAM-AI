@@ -90,7 +90,7 @@ jobs:
       - name: Quality-gate the real FastAPI model endpoint
         run: python model-training/smoke_test_api.py
 
-      - name: Save trained artifacts and evaluation before quality gate
+      - name: Save quality-gated trained artifacts and evaluation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -111,7 +111,7 @@ jobs:
               # The rebased commit contains the freshly trained artifacts; prefer them
               # only for artifact paths while retaining the latest source-code changes.
               git checkout --theirs -- model-artifacts/cram-ai-smollm model-artifacts/evaluation.json
-              git add model-artifacts/cram-ai model-artifacts/evaluation.json
+              git add model-artifacts/cram-ai-smollm model-artifacts/evaluation.json
               GIT_EDITOR=true git rebase --continue
             fi
             git push origin "HEAD:${GITHUB_REF_NAME}"
