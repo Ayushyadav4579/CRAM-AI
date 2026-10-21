@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: cram-ai-model-training-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   train-evaluate:
