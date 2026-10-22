@@ -1,4 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
 import { z } from "zod";
@@ -571,15 +570,8 @@ function checkRateLimit(request: Request) {
   return true;
 }
 
-const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-
-const HAS_AI_KEY = Boolean(process.env.GEMINI_API_KEY);
-
-function getClient() {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return null;
-  return new GoogleGenAI({ apiKey: key });
-}
+const CRAM_AI_API_URL = (process.env.CRAM_AI_API_URL || process.env.CRAM_API_URL || "https://cram-ai-api.onrender.com").replace(/\/+$/, "");
+const HAS_AI_API = Boolean(CRAM_AI_API_URL);
 
 function isTransientAiError(err: unknown): boolean {
   const message =
@@ -593,7 +585,7 @@ function isTransientAiError(err: unknown): boolean {
   // (which causes the client to see "failed to fetch").
   if (/GenerateRequestsPerDay|quotaValue|PerProjectPerModel-FreeTier/i.test(message)) {
     throw new Error(
-      "Gemini API daily free-tier quota exhausted (20 requests/day for this model). Wait until tomorrow, upgrade your Gemini plan, or add a different API key."
+      "The CRAM AI model API is temporarily unavailable or rate-limited. Please retry shortly."
     );
   }
   return (
@@ -609,33 +601,31 @@ function sleep(ms: number) {
 }
 
 async function generateContent(contents: string | unknown[]) {
-  const client = getClient();
-  if (!client) return null;
-  // Retry transient provider errors (503 overloaded / 429 rate limit) with
-  // exponential backoff so demand spikes don't fail the user's request.
-  const maxAttempts = 5;
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await client.models.generateContent({
-        model: MODEL_NAME,
-        contents: contents as any,
-        config: {
-          maxOutputTokens: 65536,
-        },
-      });
-    } catch (err) {
-      lastError = err;
-      if (attempt === maxAttempts || !isTransientAiError(err)) throw err;
-      const delayMs = Math.min(1_000 * 2 ** (attempt - 1), 12_000);
-      console.warn(
-        `Gemini call failed (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms:`,
-        err instanceof Error ? err.message : err
-      );
-      await sleep(delayMs);
-    }
+  const prompt = typeof contents === "string"
+    ? contents
+    : Array.isArray(contents)
+      ? contents.map((part: any) => typeof part?.text === "string" ? part.text : "").filter(Boolean).join("\n")
+      : "";
+  if (!prompt.trim()) {
+    throw new Error("The connected CRAM AI API accepts text prompts only. Image OCR is not supported by the current model endpoint.");
   }
-  throw lastError;
+  const response = await fetch(`${CRAM_AI_API_URL}/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt, max_new_tokens: 192, temperature: 0.1 }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  const raw = await response.text();
+  let payload: any;
+  try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = { detail: raw }; }
+  if (!response.ok) {
+    const detail = payload?.detail;
+    const message = typeof detail === "string" ? detail : detail?.message || payload?.message || payload?.error;
+    throw new Error(`CRAM AI API returned HTTP ${response.status}: ${message || raw.slice(0, 300) || "request failed"}`);
+  }
+  const text = typeof payload?.response === "string" ? payload.response : "";
+  if (!text.trim()) throw new Error("CRAM AI API returned an empty response.");
+  return { text };
 }
 
 function normalizeText(value: string) {
@@ -1206,30 +1196,12 @@ function validateAndCleanItems(items: unknown[], type: string): unknown[] {
 
 // ── Document Extraction ──────────────────────────────────────────────────────
 
-async function extractWithGeminiOcr(
-  buffer: Buffer,
-  mimeType: string,
-  fileName: string
+async function extractWithCramAiOcr(
+  _buffer: Buffer,
+  _mimeType: string,
+  _fileName: string
 ) {
-  const base64 = buffer.toString("base64");
-  const result = await generateContent([
-    {
-      inlineData: {
-        data: base64,
-        mimeType,
-      },
-    },
-    {
-      text: `You are the OCR engine for ${APP_NAME}. Extract ALL readable study material from the supplied ${mimeType === "application/pdf" ? "PDF" : "image"}.
-Return ONLY the extracted text, with no commentary, no markdown fences, no summary, and no invented content.
-Preserve the original reading order as closely as possible.
-Preserve headings, question numbers, answer choices, formulas, symbols, punctuation, and line breaks where useful.
-For worksheets, include every question and every option.
-If some text is genuinely unreadable, omit only that fragment rather than guessing.
-The file name is: ${fileName}`,
-    },
-  ]);
-  return normalizeText(result.text);
+  throw new Error("The connected CRAM AI model API is text-only and cannot read image pixels yet. Please upload a searchable PDF, DOCX, TXT, or Markdown file.");
 }
 
 async function extractFile(file: File) {
@@ -1271,7 +1243,7 @@ async function extractFile(file: File) {
 
     // If still too little text, use Gemini OCR
     if (text.length < 20) {
-      text = await extractWithGeminiOcr(
+      text = await extractWithCramAiOcr(
         buffer,
         "application/pdf",
         file.name
@@ -1285,7 +1257,7 @@ async function extractFile(file: File) {
     const mimeType = name.endsWith(".png")
       ? "image/png"
       : "image/jpeg";
-    text = await extractWithGeminiOcr(buffer, mimeType, file.name);
+    text = await extractWithCramAiOcr(buffer, mimeType, file.name);
   } else {
     throw new Error(
       "Unsupported file type. Use PDF, DOCX, TXT, MD, JPG, or PNG."
@@ -1979,8 +1951,8 @@ function generationErrorMessage(error: unknown): string {
     )
   ) {
     return /requests per day|daily quota/i.test(message)
-      ? "Your Gemini API daily quota has been exhausted. Try again tomorrow, or increase your quota in Google AI Studio."
-      : "Gemini API rate limit reached. Wait a moment and try again.";
+      ? "The CRAM AI model API is temporarily unavailable or rate-limited. Please retry shortly."
+      : "CRAM AI is busy. Wait a moment and try again.";
   }
   return message.length > 300 ? message.slice(0, 300) + "..." : message;
 }
@@ -2069,9 +2041,9 @@ async function generateStudyPackCore(
     );
     const t0 = Date.now();
     let lastError: Error | null = null;
-    if (!HAS_AI_KEY)
+    if (!HAS_AI_API)
       throw new Error(
-        "AI returned no response (check GEMINI_API_KEY and quota)."
+        "AI returned no response (check the CRAM AI API deployment)."
       );
     // Retry with exponential backoff for transient errors (max 3 attempts).
     // JSON parse failures are retried too - a malformed model response must
@@ -2082,7 +2054,7 @@ async function generateStudyPackCore(
         const result = await generateContent(prompt);
         if (!result)
           throw new Error(
-            "AI returned no response (check GEMINI_API_KEY and quota)."
+            "AI returned no response (check the CRAM AI API deployment)."
           );
         const parsed = parseModelJson(result.text);
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -2160,7 +2132,7 @@ async function generateStudyPackCore(
    */
   const retryEmptySections = async (pack: any) => {
     // Without an API key there is nothing to retry against.
-    if (!HAS_AI_KEY) return;
+    if (!HAS_AI_API) return;
     const failed = pack.sections.filter(
       (section: any) => section.items.length === 0 && types.includes(section.type)
     );
@@ -2320,7 +2292,7 @@ async function generateStudyPackCore(
       (sum: number, section: any) => sum + section.items.length,
       0
     );
-    if (total === 0 && HAS_AI_KEY)
+    if (total === 0 && HAS_AI_API)
       throw new Error(
         "The AI could not generate any content from this material. Please try again."
       );
@@ -2437,7 +2409,7 @@ async function generateStudyPackCore(
   );
   // A pack with nothing in it is a failure, not a result - surface the real
   // error instead of showing the user empty headings.
-  if (totalItems === 0 && HAS_AI_KEY) {
+  if (totalItems === 0 && HAS_AI_API) {
     throw (
       lastError ??
       new Error(
@@ -2658,7 +2630,7 @@ Return JSON only: {"topics":["topic 1","topic 2"]}.
 
 ${sourceForPrompt(parsed.data.text)}`
       );
-      if (!result) throw new Error("AI returned no response (check GEMINI_API_KEY and quota).");
+      if (!result) throw new Error("AI returned no response (check the CRAM AI API deployment).");
       const raw = parseModelJson(result.text);
       let topics = Array.isArray(raw.topics)
         ? raw.topics
@@ -2699,14 +2671,14 @@ ${sourceForPrompt(parsed.data.text)}`
         return json(
           {
             error: isDaily
-              ? "Your Gemini API daily quota has been exhausted. Try again tomorrow."
-              : "Gemini API rate limit reached. Wait a moment and try again.",
+              ? "Your The CRAM AI model API is temporarily unavailable or rate-limited. Please retry shortly."
+              : "CRAM AI is busy. Wait a moment and try again.",
             quotaExhausted: isDaily,
           },
           429
         );
       }
-      if (!HAS_AI_KEY) {
+      if (!HAS_AI_API) {
         const sentences = parsed.data.text
           .split(/(?<=[.!?])\s+/)
           .filter((s: string) => s.length > 15 && s.length < 100)
@@ -2755,10 +2727,10 @@ ${sourceForPrompt(parsed.data.text)}`
       // The browser aborted the request - nobody is listening for a response.
       if (isAbortError(error))
         return json({ error: "Generation cancelled.", cancelled: true }, 499);
-      if (!HAS_AI_KEY) {
+      if (!HAS_AI_API) {
         return json({
           title: `${APP_NAME} Study Pack (Demo)`,
-          summary: "Demo mode: add GEMINI_API_KEY for full AI generation.",
+          summary: "CRAM AI model API is not configured.",
           topics: [],
           sections: types.map((type) => ({
             type,
@@ -2811,7 +2783,7 @@ ${parsed.data.question}
 
 Respond with VALID JSON ONLY: {"answer":"your answer here"}`
       );
-      if (!result) throw new Error("AI returned no response (check GEMINI_API_KEY and quota).");
+      if (!result) throw new Error("AI returned no response (check the CRAM AI API deployment).");
       const raw = parseModelJson(result.text);
       const answer =
         typeof raw.answer === "string" ? raw.answer : result.text;
@@ -2825,16 +2797,16 @@ Respond with VALID JSON ONLY: {"answer":"your answer here"}`
         return json(
           {
             error: isDaily
-              ? "Your Gemini API daily quota has been exhausted. Try again tomorrow."
-              : "Gemini API rate limit reached. Wait a moment and try again.",
+              ? "Your The CRAM AI model API is temporarily unavailable or rate-limited. Please retry shortly."
+              : "CRAM AI is busy. Wait a moment and try again.",
             quotaExhausted: isDaily,
           },
           429
         );
       }
-      if (!HAS_AI_KEY) {
+      if (!HAS_AI_API) {
         return json({
-          answer: "Demo mode: Add GEMINI_API_KEY for AI-powered answers. The question was: " + parsed.data.question.slice(0, 200),
+          answer: "CRAM AI model API is not configured. Question: " + parsed.data.question.slice(0, 200),
         });
       }
       return json(
