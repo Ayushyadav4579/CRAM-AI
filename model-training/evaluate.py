@@ -49,7 +49,7 @@ def main():
         rows.extend([r for r in all_rows if r.get("task")==task][:per_task_limit])
     results=[]
     for i,r in enumerate(rows,1):
-        prompt=f"### Instruction:\n{r['instruction']}\n### Response:\n"
+        prompt=(tokenizer.apply_chat_template([{"role":"user","content":r["instruction"].strip()}],tokenize=False,add_generation_prompt=True) if getattr(tokenizer,"chat_template",None) else f"### Instruction:\n{r['instruction']}\n### Response:\n")
         inputs=tokenizer(prompt,return_tensors="pt",truncation=True,max_length=512)
         with torch.no_grad():
             out=model.generate(**inputs,max_new_tokens=96,do_sample=False,pad_token_id=tokenizer.eos_token_id,
