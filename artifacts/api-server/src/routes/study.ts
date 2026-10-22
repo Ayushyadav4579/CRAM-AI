@@ -89,6 +89,28 @@ async function callCramAi(prompt: string): Promise<string> {
   return payload.response;
 }
 
+async function answerFromCramAiNotes(question: string, sourceText: string): Promise<string> {
+  const text = sourceText.length <= 12_000 ? sourceText : sourceText.slice(-12_000);
+  const response = await fetch(`${CRAM_AI_API_URL}/study/answer`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ question, text, grade: 10, subject: "General" }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const raw = await response.text();
+  let payload: any;
+  try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = { detail: raw }; }
+  if (!response.ok) {
+    const detail = payload?.detail;
+    const message = typeof detail === "string" ? detail : detail?.message || payload?.message || payload?.error;
+    throw new Error(`CRAM AI notes API returned HTTP ${response.status}: ${message || raw.slice(0, 300) || "request failed"}`);
+  }
+  const answer = typeof payload?.response === "string" ? payload.response : typeof payload?.answer === "string" ? payload.answer : "";
+  if (!answer.trim()) throw new Error("CRAM AI notes API returned an empty answer.");
+  return answer;
+}
+
+
 function getModel() {
   // Compatibility adapter for existing route logic; all generation goes to the
   // self-hosted CRAM AI model API, not a third-party hosted model.
@@ -1538,75 +1560,13 @@ router.post("/study/chat", async (req, res): Promise<void> => {
     res.status(400).json({ error: "Add study material and a question." });
     return;
   }
-
-  const knowledge = buildMathKnowledge(parsed.data.text);
-
-  if (!CRAM_AI_API_URL) {
-    res.json(AskStudyDocumentResponse.parse({ answer: demoChat(parsed.data.text, parsed.data.question, knowledge) }));
-    return;
-  }
-
   try {
-    const model = getModel();
-    const sourceText = knowledge.hasMathContent
-      ? buildMathContext(parsed.data.text, knowledge)
-      : parsed.data.text;
-
-    // Build subject-aware chat prompt
-    const mathInstructions = knowledge.hasMathContent
-      ? `\nIMPORTANT: This is a ${knowledge.subject} document.
-- When answering mathematical questions, SHOW the mathematical reasoning step by step.
-- Preserve equation notation exactly as given.
-- For solving problems, show: Given → Required → Substitution → Solution → Answer.
-- Do NOT copy the question text as the answer. Actually solve/explain it.
-- For parameter-based equations, apply the correct mathematical conditions.`
-      : "";
-
-    const chatText = await generateWithRetry(model,
-      `You are a source-grounded study tutor.${mathInstructions}
-
-TASK: Answer the student's question using ONLY the uploaded study material below.
-
-RULES:
-1. Base your answer entirely on the source material.
-2. If the answer is not found in the document, clearly state: "This is not found in the uploaded material."
-3. Never invent facts, examples, or details not in the source.
-4. Cite the relevant concept or section name when available.
-5. Be thorough but concise.
-6. If the question is ambiguous, address the most likely interpretation and note the ambiguity.
-7. For mathematical questions: show the mathematical working, not just the final answer.
-
-OUTPUT: Return JSON only: {"answer":"..."}
-
-COMPLETE STUDY MATERIAL:
-${sourceForPrompt(sourceText)}
-
-QUESTION:
-${parsed.data.question}`,
-    );
-    const parsedResponse = parseModelJson(chatText);
-    const answer =
-      parsedResponse &&
-      typeof parsedResponse === "object" &&
-      typeof (parsedResponse as Record<string, unknown>).answer === "string"
-        ? (parsedResponse as Record<string, unknown>).answer
-        : chatText;
+    const answer = await answerFromCramAiNotes(parsed.data.question, parsed.data.text);
     res.json(AskStudyDocumentResponse.parse({ answer }));
   } catch (error) {
-    req.log.error({ error }, "Document chat failed");
-
-    if (error instanceof QuotaExceededError) {
-      res.status(429).json({ error: error.message, quotaExhausted: true });
-      return;
-    }
-
+    req.log.error({ error }, "CRAM AI notes lookup failed");
     const errMsg = error instanceof Error ? error.message : "Document chat failed.";
-    if (isRateLimitError(errMsg)) {
-      res.status(429).json({ error: "CRAM AI is busy. Wait a moment and try again.", retryable: true });
-      return;
-    }
-
-    res.status(503).json({ error: errMsg });
+    res.status(503).json({ error: errMsg.slice(0, 300) });
   }
 });
 
