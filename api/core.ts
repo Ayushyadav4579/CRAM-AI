@@ -601,6 +601,9 @@ function sleep(ms: number) {
 }
 
 async function generateContent(contents: string | unknown[]) {
+  if (Array.isArray(contents) && contents.some((part: any) => part?.inlineData || part?.inline_data)) {
+    throw new Error("The connected CRAM AI model API is text-only and cannot read image pixels yet. Please upload a searchable PDF, DOCX, TXT, or Markdown file.");
+  }
   const prompt = typeof contents === "string"
     ? contents
     : Array.isArray(contents)
@@ -1241,7 +1244,7 @@ async function extractFile(file: File) {
       }
     }
 
-    // If still too little text, use Gemini OCR
+    // If still too little text, use CRAM AI OCR
     if (text.length < 20) {
       text = await extractWithCramAiOcr(
         buffer,
