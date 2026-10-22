@@ -61,7 +61,8 @@ def main():
           "attention_mask":torch.tensor([x["attention_mask"]+[0]*(max_len-len(x["attention_mask"])) for x in rows],dtype=torch.long),
           "labels":torch.tensor([x["labels"]+[-100]*(max_len-len(x["labels"])) for x in rows],dtype=torch.long),
         }
-    out=Path(a.output); staging=out.with_name(out.name+".staging")
+    # Native chat-format training must start from fresh optimizer checkpoints.
+    out=Path(a.output); staging=out.with_name(out.name+".chat-template-v2.staging")
     checkpoint_dir=staging/"checkpoints"; checkpoint_dir.mkdir(parents=True,exist_ok=True)
     args=TrainingArguments(
       output_dir=str(checkpoint_dir),num_train_epochs=a.epochs,
