@@ -59,7 +59,7 @@ else:
 def model_ready()->bool:
     return gguf_model is not None if USE_GGUF else model is not None and tokenizer is not None
 
-def _fit_prompt_to_context(prompt:str, max_chars:int=900)->str:
+def _fit_prompt_to_context(prompt:str, max_chars:int=1800)->str:
     """Keep prompts within the small CPU model's context while preserving task instructions."""
     prompt=prompt.strip()
     marker="\nSource material:\n"
@@ -77,7 +77,7 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
         raise HTTPException(status_code=503,detail={"error":"model_not_ready","message":"The configured CRAM AI model is not loadable on this server. No hosted fallback is configured.","model_dir":str(GGUF_PATH if USE_GGUF else MODEL_DIR),"load_error":load_error})
     prompt=_fit_prompt_to_context(prompt)
     # This is a 135M model on a small CPU instance. Keep per-request generation bounded.
-    limit=max(1,min(int(limit),96))
+    limit=max(1,min(int(limit),192))
     if USE_GGUF:
         try:
             # Use llama.cpp's supported chat-completion path so native ChatML
@@ -213,27 +213,14 @@ def validated_payload(response:str,kind:str)->dict[str,Any]:
 
 @app.post("/generate")
 def generate(r:GenerateRequest):
-    # Keep this endpoint bounded on the free CPU instance. A single attempt avoids
-    # turning one slow inference into two sequential requests that exceed client timeouts.
-    # Keep the prompt tiny on Render Free CPU; the instruct model already uses ChatML.
-    direct_prompt="Answer in one short sentence, at most 10 words: "+r.prompt
-    answer=gen(direct_prompt,min(r.max_new_tokens,12),r.temperature)
-    # Retry if the small local model emits EOS immediately on a difficult prompt.
-    if not answer.strip():
-        answer=gen("Give a concise direct answer. "+r.prompt,min(max(r.max_new_tokens,32),48),max(r.temperature,0.15))
-    if answer.strip() and suspicious_generic_output(r.prompt,answer):
-        # If the model merely repeats the question, retry with an explicit direct-answer instruction.
-        retry=gen("Give only the factual answer; do not repeat the question. "+r.prompt,min(max(r.max_new_tokens,24),32),max(r.temperature,0.15))
-        if retry.strip():
-            answer=retry
+    # This endpoint is the shared text-generation contract used by the CRAM AI dashboard.
+    # Preserve the caller's full instruction instead of forcing every task into a 10-word answer.
+    answer=gen(r.prompt,min(r.max_new_tokens,192),r.temperature)
     if not answer.strip():
         raise HTTPException(status_code=502,detail={
             "error":"empty_model_output",
             "message":"The local CRAM AI model returned an empty answer. No hosted fallback is configured."
         })
-    # Keep the model's real output visible for debugging and improvement rather than
-    # turning a weak-but-nonempty answer into an opaque HTTP 502. Quality is reported
-    # separately; this field must not be interpreted as a guarantee of correctness.
     valid=not suspicious_generic_output(r.prompt,answer)
     return {"response":answer,"model":"CRAM AI SmolLM2-135M-Instruct Q4_0 GGUF" if USE_GGUF else "CRAM AI fine-tuned adapter","model_loaded":True,"output_valid":valid,"quality_status":"uncertified" if not valid else "unverified"}
 
