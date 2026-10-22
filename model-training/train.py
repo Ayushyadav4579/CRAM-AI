@@ -44,7 +44,7 @@ def main():
     if not targets: raise SystemExit(f"Unsupported model_type={model_type}; refusing to guess LoRA target modules.")
     model=get_peft_model(base,LoraConfig(task_type=TaskType.CAUSAL_LM,r=8,lora_alpha=16,lora_dropout=0.05,target_modules=targets))
     def encode(row):
-        prompt=f"### Instruction:\n{row['instruction'].strip()}\n### Response:\n"
+        prompt=(tokenizer.apply_chat_template([{"role":"user","content":row["instruction"].strip()}],tokenize=False,add_generation_prompt=True) if getattr(tokenizer,"chat_template",None) else f"### Instruction:\n{row['instruction'].strip()}\n### Response:\n")
         answer=row["response"].strip()+tokenizer.eos_token
         prompt_ids=tokenizer(prompt,add_special_tokens=False)["input_ids"]
         answer_ids=tokenizer(answer,add_special_tokens=False)["input_ids"][:max(8,a.max_length//3)]
