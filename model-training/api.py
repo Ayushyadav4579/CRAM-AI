@@ -220,8 +220,8 @@ def generate(r:GenerateRequest):
     # Keep this endpoint bounded on the free CPU instance. A single attempt avoids
     # turning one slow inference into two sequential requests that exceed client timeouts.
     # Keep the prompt tiny on Render Free CPU; the instruct model already uses ChatML.
-    direct_prompt="Answer briefly: "+r.prompt
-    answer=gen(direct_prompt,min(r.max_new_tokens,24),r.temperature)
+    direct_prompt="Answer in one short sentence, at most 10 words: "+r.prompt
+    answer=gen(direct_prompt,min(r.max_new_tokens,12),r.temperature)
     # Retry if the small local model emits EOS immediately on a difficult prompt.
     if not answer.strip():
         answer=gen("Give a concise direct answer. "+r.prompt,min(max(r.max_new_tokens,32),48),max(r.temperature,0.15))
