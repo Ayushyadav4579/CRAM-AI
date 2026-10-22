@@ -221,7 +221,10 @@ def generate(r:GenerateRequest):
     # turning one slow inference into two sequential requests that exceed client timeouts.
     # Keep the prompt tiny on Render Free CPU; the instruct model already uses ChatML.
     direct_prompt="Answer briefly: "+r.prompt
-    answer=gen(direct_prompt,min(r.max_new_tokens,16),r.temperature)
+    answer=gen(direct_prompt,min(r.max_new_tokens,48),r.temperature)
+    # Retry if the small local model emits EOS immediately on a difficult prompt.
+    if not answer.strip():
+        answer=gen("Give a concise direct answer. "+r.prompt,min(max(r.max_new_tokens,32),48),max(r.temperature,0.15))
     if not answer.strip():
         raise HTTPException(status_code=502,detail={
             "error":"empty_model_output",
