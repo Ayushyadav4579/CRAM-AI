@@ -80,20 +80,16 @@ def gen(prompt:str,limit:int=96,temperature:float=0.0)->str:
     limit=max(1,min(int(limit),96))
     if USE_GGUF:
         try:
-            # Use the model's native ChatML prompt through the plain completion API.
-            # This avoids llama.cpp chat-handler/template detection overhead on the
-            # small CPU-only Render instance while retaining the instruct model format.
-            chat_prompt=f"<|im_start|>user\n{prompt}\n<|im_end|>\n<|im_start|>assistant\n"
-            result=gguf_model.create_completion(
-                prompt=chat_prompt,
+            # Use llama.cpp's supported chat-completion path so native ChatML
+            # stop handling is delegated to the runtime rather than raw completion.
+            result=gguf_model.create_chat_completion(
+                messages=[{"role":"user","content":prompt}],
                 max_tokens=limit,
                 temperature=temperature,
                 top_p=0.9,
                 repeat_penalty=1.08,
-                stop=["<|im_end|>","<|im_start|>"],
-                echo=False,
             )
-            answer=str(result["choices"][0].get("text","")).strip()
+            answer=str(result["choices"][0].get("message",{}).get("content","")).strip()
             if not answer:
                 raise ValueError("GGUF model returned an empty completion.")
             return answer
