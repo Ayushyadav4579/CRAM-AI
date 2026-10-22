@@ -225,6 +225,11 @@ def generate(r:GenerateRequest):
     # Retry if the small local model emits EOS immediately on a difficult prompt.
     if not answer.strip():
         answer=gen("Give a concise direct answer. "+r.prompt,min(max(r.max_new_tokens,32),48),max(r.temperature,0.15))
+    if answer.strip() and suspicious_generic_output(r.prompt,answer):
+        # If the model merely repeats the question, retry with an explicit direct-answer instruction.
+        retry=gen("Give only the factual answer; do not repeat the question. "+r.prompt,min(max(r.max_new_tokens,24),32),max(r.temperature,0.15))
+        if retry.strip():
+            answer=retry
     if not answer.strip():
         raise HTTPException(status_code=502,detail={
             "error":"empty_model_output",
