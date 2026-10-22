@@ -34,7 +34,7 @@ if USE_GGUF:
         if not GGUF_PATH.is_file():
             raise FileNotFoundError(f"Configured GGUF model does not exist: {GGUF_PATH}")
         from llama_cpp import Llama
-        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=int(os.getenv("MODEL_CONTEXT","512")),n_threads=int(os.getenv("MODEL_THREADS","2")),n_batch=int(os.getenv("MODEL_BATCH","32")),n_ubatch=int(os.getenv("MODEL_UBATCH","32")),chat_format="chatml",verbose=False)
+        gguf_model=Llama(model_path=str(GGUF_PATH),n_ctx=min(int(os.getenv("MODEL_CONTEXT","512")),256),n_threads=1,n_batch=4,n_ubatch=4,chat_format="chatml",verbose=False)
         metadata_path=HERE.parent/"model-artifacts"/"cram-ai-smollm"/"training_metadata.json"
         meta=json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
         meta.update({"base_model":meta.get("base_model","HuggingFaceTB/SmolLM2-135M-Instruct"),"model_type":"llama","prompt_format":"chat_template","artifact_format":"GGUF Q4_0"})
@@ -59,7 +59,7 @@ else:
 def model_ready()->bool:
     return gguf_model is not None if USE_GGUF else model is not None and tokenizer is not None
 
-def _fit_prompt_to_context(prompt:str, max_chars:int=2400)->str:
+def _fit_prompt_to_context(prompt:str, max_chars:int=900)->str:
     """Keep prompts within the small CPU model's context while preserving task instructions."""
     prompt=prompt.strip()
     marker="\nSource material:\n"
@@ -221,7 +221,7 @@ def generate(r:GenerateRequest):
     # turning one slow inference into two sequential requests that exceed client timeouts.
     # Keep the prompt tiny on Render Free CPU; the instruct model already uses ChatML.
     direct_prompt="Answer briefly: "+r.prompt
-    answer=gen(direct_prompt,min(r.max_new_tokens,48),r.temperature)
+    answer=gen(direct_prompt,min(r.max_new_tokens,24),r.temperature)
     # Retry if the small local model emits EOS immediately on a difficult prompt.
     if not answer.strip():
         answer=gen("Give a concise direct answer. "+r.prompt,min(max(r.max_new_tokens,32),48),max(r.temperature,0.15))
