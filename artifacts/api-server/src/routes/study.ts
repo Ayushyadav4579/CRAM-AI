@@ -2,7 +2,6 @@ import { Router, type IRouter, type RequestHandler } from "express";
 import multer from "multer";
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   AskStudyDocumentBody,
   AskStudyDocumentResponse,
@@ -36,7 +35,7 @@ const API_RETRY_BASE_MS = 2000;
 const RATE_LIMIT_MAX_RETRIES = 3;
 const DAILY_QUOTA_MAX_RETRIES = 0;
 /**
- * Maximum concurrent Gemini generation requests.
+ * Maximum concurrent CRAM AI generation requests.
  * Start at 1 to avoid 429s on the free tier. Adaptive concurrency will
  * auto-scale up to this limit when requests succeed without rate-limiting.
  */
@@ -65,28 +64,46 @@ const uploadFile: RequestHandler = (req, res, next) => {
   });
 };
 
-// ── Gemini model accessor ────────────────────────────────────────────────────
+// ── CRAM AI model accessor ────────────────────────────────────────────────────
+
+const CRAM_AI_API_URL = (process.env.CRAM_AI_API_URL || process.env.CRAM_API_URL || "https://cram-ai-api.onrender.com").replace(/\/+$/, "");
+
+async function callCramAi(prompt: string): Promise<string> {
+  const response = await fetch(`${CRAM_AI_API_URL}/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt, max_new_tokens: 192, temperature: 0.1 }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  const raw = await response.text();
+  let payload: any;
+  try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = { detail: raw }; }
+  if (!response.ok) {
+    const detail = payload?.detail;
+    const message = typeof detail === "string" ? detail : detail?.message || payload?.message || payload?.error;
+    throw new Error(`CRAM AI API returned HTTP ${response.status}: ${message || raw.slice(0, 300) || "request failed"}`);
+  }
+  if (typeof payload?.response !== "string" || !payload.response.trim()) {
+    throw new Error("CRAM AI API returned an empty response.");
+  }
+  return payload.response;
+}
 
 function getModel() {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error(
-      "CRAM AI needs GEMINI_API_KEY to generate content. Add it in the project's Keys/API keys tab and try again.",
-    );
-  }
-  const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-  // 90-second per-request timeout — study generation involves long prompts
-  // with large extracted text and multi-part output schemas.
-  return new GoogleGenerativeAI(key).getGenerativeModel(
-    { model },
-    { timeout: 90_000 },
-  );
+  // Compatibility adapter for existing route logic; all generation goes to the
+  // self-hosted CRAM AI model API, not a third-party hosted model.
+  return {
+    generateContent: async (prompt: string) => {
+      const text = await callCramAi(prompt);
+      return { response: { text: () => text } };
+    },
+  };
 }
 
 // ── Retry-aware AI generation ───────────────────────────────────────────────
 
 /**
- * Thrown when the Gemini API returns a daily/fixed quota exhaustion error.
+ * Thrown when the CRAM AI API returns a daily/fixed quota exhaustion error.
  * Should NOT be retried — the quota won't recover within the session.
  */
 export class QuotaExceededError extends Error {
@@ -150,68 +167,23 @@ async function generateWithRetry(
   model: ReturnType<typeof getModel>,
   prompt: string,
 ): Promise<string> {
-  const modelName = process.env.GEMINI_MODEL || "gemini-3.6-flash";
   let lastError: Error | null = null;
-  let rateLimitRetries = 0;
-  let serverRetries = 0;
-
-  for (let attempt = 0; attempt <= API_RETRIES + RATE_LIMIT_MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const result = await model.generateContent(prompt);
-      // Decay rate limit counter on success
+      const text = result.response.text();
+      if (!text.trim()) throw new Error("CRAM AI API returned an empty response.");
       if (recentRateLimits > 0) recentRateLimits = Math.max(0, recentRateLimits - 1);
-      return result.response.text();
+      return text;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      lastError = err instanceof Error ? err : new Error(msg);
-
-      // ── Daily / fixed quota exhaustion → do NOT retry ────────────────────
-      if (isDailyQuotaError(msg)) {
-        console.error(
-          `[GEMINI] Daily quota exhausted — model=${modelName}, attempt=${attempt + 1}, retryCount=0`,
-        );
-        throw new QuotaExceededError(
-          "Your Gemini API daily quota has been exhausted. Try again tomorrow, or increase your quota in Google AI Studio.",
-        );
-      }
-
-      // ── HTTP 429 / rate limit → retry with backoff + jitter ─────────────
-      if (isRateLimitError(msg) && rateLimitRetries < RATE_LIMIT_MAX_RETRIES) {
-        rateLimitRetries++;
-        const retryAfter = extractRetryAfter(msg);
-        const baseDelay = retryAfter
-          ? retryAfter * 1000
-          : API_RETRY_BASE_MS * Math.pow(2, rateLimitRetries - 1);
-        const delay = jitteredDelay(baseDelay);
-        recentRateLimits++;
-        lastRateLimitTime = Date.now();
-        console.warn(
-          `[GEMINI] Rate limited (429) — model=${modelName}, attempt=${attempt + 1}, retryCount=${rateLimitRetries}/${RATE_LIMIT_MAX_RETRIES}, waitMs=${Math.round(delay)}`,
-        );
-        await sleep(delay);
-        continue;
-      }
-
-      // ── Transient server error (502, 503, capacity) → retry with backoff ──
-      if (isTransientServerError(msg) && serverRetries < API_RETRIES) {
-        serverRetries++;
-        const delay = jitteredDelay(API_RETRY_BASE_MS * Math.pow(2, serverRetries - 1));
-        console.warn(
-          `[GEMINI] Transient server error — model=${modelName}, status=${msg.match(/\b5\d{2}\b/)?.[0] ?? "unknown"}, attempt=${attempt + 1}, retryCount=${serverRetries}/${API_RETRIES}, waitMs=${Math.round(delay)}`,
-        );
-        await sleep(delay);
-        continue;
-      }
-
-      // ── Non-retryable error → throw immediately ─────────────────────────
-      console.error(
-        `[GEMINI] Non-retryable error — model=${modelName}, attempt=${attempt + 1}, error=${msg.slice(0, 200)}`,
-      );
-      throw lastError;
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const msg = lastError.message;
+      const retryable = /HTTP (429|500|502|503|504)|timed? ?out|fetch failed|temporarily unavailable/i.test(msg);
+      if (!retryable || attempt === 1) throw lastError;
+      await sleep(700 * (attempt + 1));
     }
   }
-
-  throw lastError ?? new Error("AI generation failed after retries");
+  throw lastError ?? new Error("CRAM AI generation failed.");
 }
 
 // ── Text helpers ─────────────────────────────────────────────────────────────
@@ -1028,7 +1000,7 @@ function demoPack(text: string, types: string[], count: number, topic?: string |
     ? ` — ${knowledge.subject.charAt(0).toUpperCase() + knowledge.subject.slice(1)}`
     : "";
 
-  const summaryParts = ["Demo mode is active because GEMINI_API_KEY is not configured."];
+  const summaryParts = ["Demo mode is active because CRAM_AI_API_URL is not configured."];
   if (knowledge?.hasMathContent) {
     summaryParts.push("Mathematical content detected. Equations and structures are identified in the source.");
   }
@@ -1054,7 +1026,7 @@ function demoChat(text: string, question: string, knowledge?: MathKnowledge | nu
   if (knowledge?.hasMathContent) {
     const eqs = knowledge.equations;
     if (eqs.length > 0) {
-      return `Demo mode: This material contains ${eqs.length} mathematical expression(s). For full AI-powered solving and explanation of mathematical questions, configure GEMINI_API_KEY.`;
+      return `Demo mode: This material contains ${eqs.length} mathematical expression(s). For full AI-powered solving and explanation of mathematical questions, configure CRAM_AI_API_URL.`;
     }
   }
 
@@ -1149,7 +1121,7 @@ router.post("/study/topics", async (req, res): Promise<void> => {
   // Build math knowledge for subject-aware topic detection
   const knowledge = buildMathKnowledge(parsed.data.text);
 
-  if (!process.env.GEMINI_API_KEY) {
+  if (!CRAM_AI_API_URL) {
     res.json(DetectStudyTopicsResponse.parse({ topics: demoTopics(parsed.data.text, knowledge) }));
     return;
   }
@@ -1208,7 +1180,7 @@ ${sourceForPrompt(parsed.data.text)}`,
 
     const errMsg = error instanceof Error ? error.message : "Topic detection failed.";
     if (isRateLimitError(errMsg)) {
-      res.status(429).json({ error: "Gemini API rate limit reached. Wait a moment and try again.", retryable: true });
+      res.status(429).json({ error: "CRAM AI is busy. Wait a moment and try again.", retryable: true });
       return;
     }
 
@@ -1228,7 +1200,7 @@ router.post("/study/generate", async (req, res): Promise<void> => {
   // Build math knowledge for subject-aware generation
   const knowledge = buildMathKnowledge(text);
 
-  if (!process.env.GEMINI_API_KEY) {
+  if (!CRAM_AI_API_URL) {
     res.json(demoPack(text, types, count, topic, knowledge));
     return;
   }
@@ -1303,7 +1275,7 @@ router.post("/study/generate", async (req, res): Promise<void> => {
       }
     }
 
-    // ── Detect topics after generation (avoids extra concurrent Gemini call) ──
+    // ── Detect topics after generation (avoids extra concurrent CRAM AI call) ──
     let topics: string[] = [];
     try {
       const model = getModel();
@@ -1376,7 +1348,7 @@ router.post("/study/generate", async (req, res): Promise<void> => {
     const errMsg = error instanceof Error ? error.message : "Generation failed.";
     if (isRateLimitError(errMsg)) {
       res.status(429).json({
-        error: "Gemini API rate limit reached. Wait a moment and try again.",
+        error: "CRAM AI is busy. Wait a moment and try again.",
         retryable: true,
       });
       return;
@@ -1400,7 +1372,7 @@ router.post("/study/generate-stream", async (req, res): Promise<void> => {
   const { text, types, count, language, difficulty, topic } = parsed.data;
   const knowledge = buildMathKnowledge(text);
 
-  if (!process.env.GEMINI_API_KEY) {
+  if (!CRAM_AI_API_URL) {
     res.json(demoPack(text, types, count, topic, knowledge));
     return;
   }
@@ -1474,7 +1446,7 @@ router.post("/study/generate-stream", async (req, res): Promise<void> => {
         }
       }
     }
-    // ── Detect topics after generation (avoids extra concurrent Gemini call) ──
+    // ── Detect topics after generation (avoids extra concurrent CRAM AI call) ──
     let topics: string[] = [];
     try {
       const model = getModel();
@@ -1551,7 +1523,7 @@ router.post("/study/generate-stream", async (req, res): Promise<void> => {
     } else {
       const errMsg = error instanceof Error ? error.message : "Generation failed.";
       if (isRateLimitError(errMsg)) {
-        sendEvent("error", { error: "Gemini API rate limit reached. Wait a moment and try again.", retryable: true });
+        sendEvent("error", { error: "CRAM AI is busy. Wait a moment and try again.", retryable: true });
       } else {
         sendEvent("error", { error: errMsg.length > 300 ? errMsg.slice(0, 300) + "..." : errMsg });
       }
@@ -1569,7 +1541,7 @@ router.post("/study/chat", async (req, res): Promise<void> => {
 
   const knowledge = buildMathKnowledge(parsed.data.text);
 
-  if (!process.env.GEMINI_API_KEY) {
+  if (!CRAM_AI_API_URL) {
     res.json(AskStudyDocumentResponse.parse({ answer: demoChat(parsed.data.text, parsed.data.question, knowledge) }));
     return;
   }
@@ -1630,7 +1602,7 @@ ${parsed.data.question}`,
 
     const errMsg = error instanceof Error ? error.message : "Document chat failed.";
     if (isRateLimitError(errMsg)) {
-      res.status(429).json({ error: "Gemini API rate limit reached. Wait a moment and try again.", retryable: true });
+      res.status(429).json({ error: "CRAM AI is busy. Wait a moment and try again.", retryable: true });
       return;
     }
 
